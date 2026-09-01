@@ -9,12 +9,15 @@
 # move said applications out of the umbrella.
 import Config
 
-# Sample configuration:
-#
-#     config :logger, :default_handler,
-#       level: :info
-#
-#     config :logger, :default_formatter,
-#       format: "$date $time [$level] $metadata$message\n",
-#       metadata: [:user_id]
+config :chatchat_broker,
+  ecto_repos: [ChatchatBroker.Repo]
+
+config :chatchat_web, ChatchatWeb.Endpoint,
+  adapter: Bandit.PhoenixAdapter,
+  render_errors: [formats: [json: ChatchatWeb.ErrorJSON], layout: false],
+  pubsub_server: ChatchatWeb.PubSub
+
+config :phoenix, :json_library, Jason
+
+import_config "#{config_env()}.exs"
 #

@@ -79,3 +79,11 @@ chatchat_simulator (multi instance): Load-test clients
 
 postgres db: Shared PostgreSQL database
 
+## Start up
+
+Create and migrate the database:
+```sh
+mix ecto.create
+mix ecto.migrate
+mix phx.server
+```
