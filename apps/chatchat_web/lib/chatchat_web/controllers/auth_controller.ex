@@ -3,6 +3,7 @@ defmodule ChatchatWeb.AuthController do
   use OpenApiSpex.ControllerSpecs
 
   alias ChatchatBroker.Accounts
+
   alias ChatchatWeb.Schemas.{
     AccessTokenResponse,
     CredentialsRequest,
@@ -28,6 +29,7 @@ defmodule ChatchatWeb.AuthController do
          RegistrationErrorsResponse}
     ]
   )
+
   def register(conn, %{"username" => username, "password" => password}) do
     case Accounts.register_user(username, password) do
       {:ok, _user} ->
@@ -35,10 +37,10 @@ defmodule ChatchatWeb.AuthController do
         |> put_status(:created)
         |> send_resp(:no_content, "")
 
-      {:error, changeset} ->
+      {:error, errors} ->
         conn
         |> put_status(:unprocessable_entity)
-        |> json(%{errors: get_errors(changeset)})
+        |> json(%{errors: errors})
     end
   end
 
@@ -59,6 +61,7 @@ defmodule ChatchatWeb.AuthController do
       unauthorized: {"Invalid credentials", "application/json", ErrorResponse}
     ]
   )
+
   def login(conn, %{"username" => username, "password" => password}) do
     case Accounts.authenticate_user(username, password) do
       {:ok, user} ->
@@ -84,12 +87,6 @@ defmodule ChatchatWeb.AuthController do
 
   def verify_access_token(token) do
     Phoenix.Token.verify(ChatchatWeb.Endpoint, @token_salt, token, max_age: @token_max_age)
-  end
-
-  defp get_errors(%Ecto.Changeset{errors: errors}) do
-    Enum.map(errors, fn {_field, {message, _opts}} ->
-      message
-    end)
   end
 
   defp access_token_expires_at do
