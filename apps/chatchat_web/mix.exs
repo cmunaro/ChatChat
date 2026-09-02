@@ -29,6 +29,7 @@ defmodule ChatchatWeb.MixProject do
       {:chatchat_broker, in_umbrella: true},
       {:bandit, "~> 1.0"},
       {:jason, "~> 1.4"},
+      {:open_api_spex, "~> 3.22"},
       {:phoenix, "~> 1.8"}
     ]
   end

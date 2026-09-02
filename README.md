@@ -16,7 +16,7 @@ Elixir distributed real-time chat exercise.
   - [ ] Delivery statistics
   - [ ] Latency, mailbox and bottleneck metrics
   - [ ] Entity management
-  - [ ] Api documentation
+  - [x] Api documentation
 - [ ] High-load client simulation
 - [ ] User discovery by username or invite
 - [ ] Conversation membership and authorization
@@ -48,8 +48,8 @@ Elixir distributed real-time chat exercise.
   - [ ] Redis PubSub across nodes
   - [ ] REST, PubSub and RPC boundaries
 - [ ] API documentation with OpenAPI Spex
-  - [ ] Request and response schemas
-  - [ ] OpenAPI specification
+  - [x] Request and response schemas
+  - [x] OpenAPI specification
   - [ ] Swagger UI in admin
 - [ ] Backpressure handling
 - [ ] Multi-node and high-load simulations
@@ -63,9 +63,6 @@ Elixir distributed real-time chat exercise.
   - [ ] Loki http traces
   - [ ] Grafana dashboards
 - [ ] Node-local caching with ConCache
-- [ ] API documentation with `open_api_spex`
-  - [ ] Request and response schemas
-  - [ ] Swagger UI
 
 ## Architecture goal so far
 
@@ -86,4 +83,11 @@ Create and migrate the database:
 mix ecto.create
 mix ecto.migrate
 mix phx.server
+```
+
+## API documentation
+
+```text
+/swaggerui
+/openapi
 ```

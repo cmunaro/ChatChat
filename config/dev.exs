@@ -1,5 +1,7 @@
 import Config
 
+config :open_api_spex, :cache_adapter, OpenApiSpex.Plug.NoneCache
+
 config :chatchat_broker, ChatchatBroker.Repo,
   url: System.get_env("DATABASE_URL", "ecto://chatchat:chatchat@localhost/chatchat_dev"),
   pool_size: 10,
