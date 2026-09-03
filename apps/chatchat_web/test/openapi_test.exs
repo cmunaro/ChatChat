@@ -20,6 +20,16 @@ defmodule ChatchatWeb.OpenApiTest do
     assert %{"post" => %{"operationId" => "login"}} = spec["paths"]["/api/login"]
 
     assert %{
+             "get" => %{
+               "operationId" => "searchUser",
+               "security" => [%{"bearerAuth" => []}]
+             }
+           } = spec["paths"]["/api/user/search"]
+
+    assert %{"type" => "http", "scheme" => "bearer"} =
+             spec["components"]["securitySchemes"]["bearerAuth"]
+
+    assert %{
              "required" => ["username", "password"],
              "properties" => %{
                "username" => %{"minLength" => 3, "maxLength" => 32},

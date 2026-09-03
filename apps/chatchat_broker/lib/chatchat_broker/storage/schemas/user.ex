@@ -5,7 +5,7 @@ defmodule ChatchatBroker.Storage.Schemas.User do
   schema "users" do
     field(:username, :string)
     field(:password_hash, :string, redact: true)
-    timestamps(type: :utc_datetime_usec)
+    timestamps(type: :utc_datetime_usec, updated_at: false)
   end
 
   @type t :: %__MODULE__{}
