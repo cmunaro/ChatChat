@@ -1,4 +1,5 @@
 defmodule ChatchatBroker.Accounts do
+  alias ChatchatBroker.Domain.UserSearchResult
   alias ChatchatBroker.Domain.{Password, User, Username}
   alias ChatchatBroker.Storage.AccountsStore
 
@@ -25,6 +26,22 @@ defmodule ChatchatBroker.Accounts do
   end
 
   def authenticate_user(_username, _password), do: invalid_credentials()
+
+  @spec search_user(term()) :: {:ok, [UserSearchResult.t()]} | {:error, String.t()}
+  def search_user(name) when is_binary(name) do
+    {:ok, normalized_name} = Username.normalize(name)
+
+    if String.length(normalized_name) < 3 do
+      {:error, "name too short"}
+    else
+      case Username.validate(name) do
+        {:ok, username} -> {:ok, AccountsStore.search_user(username)}
+        {:error, _} -> {:error, "invalid name"}
+      end
+    end
+  end
+
+  def search_user(_), do: {:error, "invalid name"}
 
   defp invalid_credentials do
     Password.simulate_verify()

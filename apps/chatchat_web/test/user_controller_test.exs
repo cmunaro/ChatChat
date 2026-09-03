@@ -17,6 +17,7 @@ defmodule ChatchatWeb.UserControllerTest do
 
   test "GET /api/user/search allows a valid bearer token" do
     assert {:ok, user} = Accounts.register_user("alice", "correct horse")
+    assert {:ok, result_user} = Accounts.register_user("Bobby", "correct horse")
     %{access_token: token} = AuthToken.issue(user.id)
 
     conn =
@@ -24,7 +25,10 @@ defmodule ChatchatWeb.UserControllerTest do
       |> put_req_header("authorization", "Bearer #{token}")
       |> get("/api/user/search", %{name: "bob"})
 
-    assert json_response(conn, 200) == []
+    assert json_response(conn, 200) == [
+             %{"id" => result_user.id, "username" => "Bobby"}
+           ]
+
     assert conn.assigns.current_user_id == user.id
   end
 

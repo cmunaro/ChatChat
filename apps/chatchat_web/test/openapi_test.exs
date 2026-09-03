@@ -30,6 +30,12 @@ defmodule ChatchatWeb.OpenApiTest do
              spec["components"]["securitySchemes"]["bearerAuth"]
 
     assert %{
+             "type" => "array",
+             "maxItems" => 20,
+             "items" => %{"$ref" => "#/components/schemas/UserSearchResult"}
+           } = spec["components"]["schemas"]["UserSearchResults"]
+
+    assert %{
              "required" => ["username", "password"],
              "properties" => %{
                "username" => %{"minLength" => 3, "maxLength" => 32},
