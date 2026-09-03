@@ -4,6 +4,8 @@ Elixir distributed real-time chat exercise.
 
 ## Features
 
+- [x] Register and ogin
+- [x] Search users
 - [ ] 1to1 chats
 - [ ] Group chats
 - [ ] Send text, images and files
