@@ -12,7 +12,8 @@ defmodule ChatchatWeb.Plugs.Authenticate do
           {:error, _reason} -> unauthorized(conn)
         end
 
-      _ -> unauthorized(conn)
+      _ ->
+        unauthorized(conn)
     end
   end
 
