@@ -8,6 +8,7 @@ defmodule ChatChat.MixProject do
       elixir: "1.20.4",
       listeners: [Phoenix.CodeReloader],
       start_permanent: Mix.env() == :prod,
+      releases: releases(),
       deps: deps()
     ]
   end
@@ -19,5 +20,12 @@ defmodule ChatChat.MixProject do
   # Run "mix help deps" for examples and options.
   defp deps do
     []
+  end
+
+  defp releases do
+    [
+      chatchat_web: [applications: [chatchat_web: :permanent]],
+      chatchat_broker: [applications: [chatchat_broker: :permanent]]
+    ]
   end
 end
