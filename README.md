@@ -32,20 +32,14 @@ Elixir distributed real-time chat exercise.
 
 ## Implementation
 
-- [ ] Elixir umbrella with independent applications
-  - [ ] OTP application per child app
-  - [ ] Acyclic dependency graph
-  - [ ] No orchestrator app
 - [ ] Release-based Docker images
-  - [ ] HTTP/admin node
-  - [ ] Persistent TCP node
-  - [ ] Simulated clients
-- [ ] Docker Compose development environment
-- [ ] Ecto SQL storage and migrations
+- [~] Docker Compose development environment
+- [x] Ecto SQL storage and migrations
 - [ ] Phoenix HTTP API and LiveView admin
 - [ ] Thousand Island custom encrypted protocol
   - [x] Connect and disconnect with authentication
   - [ ] Reconnect
+  - [ ] Encryption
 - [ ] Pub/sub messaging
   - [ ] Phoenix PubSub on a single node
   - [ ] Redis PubSub across nodes
@@ -96,22 +90,3 @@ mix phx.server
 /swaggerui
 /openapi
 ```
-
-## TCP authentication
-
-The TCP listener uses port `4040`. Each frame is JSON followed by a newline. The first frame must
-contain the access token returned by the login API:
-
-```json
-{"type":"authenticate","token":"ACCESS_TOKEN"}
-```
-
-On success, the server keeps the connection open and replies:
-
-```json
-{"type":"authenticated","user_id":42}
-```
-
-An invalid token, a missing authentication frame, or a second authentication attempt returns an
-error frame and closes the connection. The user is considered online while at least one of their
-authenticated TCP connections is alive.
