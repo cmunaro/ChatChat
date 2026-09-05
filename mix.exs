@@ -25,7 +25,8 @@ defmodule ChatChat.MixProject do
   defp releases do
     [
       chatchat_web: [applications: [chatchat_web: :permanent]],
-      chatchat_broker: [applications: [chatchat_broker: :permanent]]
+      chatchat_broker: [applications: [chatchat_broker: :permanent]],
+      chatchat_tcp: [applications: [chatchat_tcp: :permanent]]
     ]
   end
 end

@@ -12,6 +12,14 @@ import Config
 config :chatchat_broker,
   ecto_repos: [ChatchatBroker.Repo]
 
+config :chatchat_auth,
+  token_salt: "user authentication",
+  max_age: 15 * 60
+
+config :chatchat_tcp,
+  server: [transport_options: [ip: {0, 0, 0, 0}], port: 4040, read_timeout: 60_000],
+  handler: [authentication_timeout: 5_000, max_frame_size: 8_192]
+
 config :chatchat_web, ChatchatWeb.Endpoint,
   adapter: Bandit.PhoenixAdapter,
   render_errors: [formats: [json: ChatchatWeb.ErrorJSON], layout: false],

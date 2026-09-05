@@ -67,7 +67,7 @@ defmodule ChatchatWeb.AuthControllerTest do
              "expires_at" => expires_at
            } = response
 
-    assert {:ok, user_id} = ChatchatWeb.AuthToken.verify(token)
+    assert {:ok, user_id} = ChatchatAuth.verify(token)
     assert is_integer(user_id)
     assert {:ok, expiration, 0} = DateTime.from_iso8601(expires_at)
     assert DateTime.diff(expiration, DateTime.utc_now(), :second) < 1_000
@@ -82,7 +82,7 @@ defmodule ChatchatWeb.AuthControllerTest do
         signed_at: System.system_time(:second) - 901
       )
 
-    assert {:error, :expired} = ChatchatWeb.AuthToken.verify(token)
+    assert {:error, :expired} = ChatchatAuth.verify(token)
   end
 
   test "POST /api/login rejects invalid credentials" do

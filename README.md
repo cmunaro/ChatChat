@@ -22,7 +22,7 @@ Elixir distributed real-time chat exercise.
 - [ ] High-load client simulation
 - [ ] User discovery by username or invite
 - [ ] Conversation membership and authorization
-- [ ] Online presence
+- [x] Online presence
 - [ ] Offline message delivery
 - [ ] Groups
   - [ ] Creation
@@ -44,7 +44,8 @@ Elixir distributed real-time chat exercise.
 - [ ] Ecto SQL storage and migrations
 - [ ] Phoenix HTTP API and LiveView admin
 - [ ] Thousand Island custom encrypted protocol
-  - [ ] Connect, disconnect and reconnect
+  - [x] Connect and disconnect with authentication
+  - [ ] Reconnect
 - [ ] Pub/sub messaging
   - [ ] Phoenix PubSub on a single node
   - [ ] Redis PubSub across nodes
@@ -74,6 +75,8 @@ chatchat_tcp (multi instance): Persistent TCP connections, protocol handling
 
 chatchat_broker (multi instance): Domain logic, authorization, Ecto persistence
 
+chatchat_auth (library): Shared token issuing and verification
+
 chatchat_simulator (multi instance): Load-test clients
 
 postgres db: Shared PostgreSQL database
@@ -93,3 +96,22 @@ mix phx.server
 /swaggerui
 /openapi
 ```
+
+## TCP authentication
+
+The TCP listener uses port `4040`. Each frame is JSON followed by a newline. The first frame must
+contain the access token returned by the login API:
+
+```json
+{"type":"authenticate","token":"ACCESS_TOKEN"}
+```
+
+On success, the server keeps the connection open and replies:
+
+```json
+{"type":"authenticated","user_id":42}
+```
+
+An invalid token, a missing authentication frame, or a second authentication attempt returns an
+error frame and closes the connection. The user is considered online while at least one of their
+authenticated TCP connections is alive.

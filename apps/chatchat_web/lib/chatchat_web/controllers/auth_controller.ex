@@ -3,7 +3,6 @@ defmodule ChatchatWeb.AuthController do
   use OpenApiSpex.ControllerSpecs
 
   alias ChatchatBroker.Accounts
-  alias ChatchatWeb.AuthToken
 
   alias ChatchatWeb.Schemas.{
     AccessTokenResponse,
@@ -63,7 +62,7 @@ defmodule ChatchatWeb.AuthController do
   def login(conn, %{"username" => username, "password" => password}) do
     case Accounts.authenticate_user(username, password) do
       {:ok, user} ->
-        json(conn, AuthToken.issue(user.id))
+        json(conn, ChatchatAuth.issue(user.id))
 
       {:error, :invalid_credentials} ->
         conn

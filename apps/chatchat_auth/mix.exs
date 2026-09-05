@@ -1,9 +1,9 @@
-defmodule ChatchatWeb.MixProject do
+defmodule ChatchatAuth.MixProject do
   use Mix.Project
 
   def project do
     [
-      app: :chatchat_web,
+      app: :chatchat_auth,
       version: "0.1.0",
       build_path: "../../_build",
       config_path: "../../config/config.exs",
@@ -19,18 +19,13 @@ defmodule ChatchatWeb.MixProject do
   def application do
     [
       extra_applications: [:logger],
-      mod: {ChatchatWeb.Application, []}
+      mod: {ChatchatAuth.Application, []}
     ]
   end
 
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      {:chatchat_auth, in_umbrella: true},
-      {:chatchat_broker, in_umbrella: true},
-      {:bandit, "~> 1.0"},
-      {:jason, "~> 1.4"},
-      {:open_api_spex, "~> 3.22"},
       {:phoenix, "~> 1.8"}
     ]
   end

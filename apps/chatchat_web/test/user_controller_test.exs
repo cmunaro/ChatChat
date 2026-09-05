@@ -6,7 +6,6 @@ defmodule ChatchatWeb.UserControllerTest do
 
   alias ChatchatBroker.Accounts
   alias ChatchatBroker.Repo
-  alias ChatchatWeb.AuthToken
 
   @endpoint ChatchatWeb.Endpoint
 
@@ -18,7 +17,7 @@ defmodule ChatchatWeb.UserControllerTest do
   test "GET /api/user/search allows a valid bearer token" do
     assert {:ok, user} = Accounts.register_user("alice", "correct horse")
     assert {:ok, result_user} = Accounts.register_user("Bobby", "correct horse")
-    %{access_token: token} = AuthToken.issue(user.id)
+    %{access_token: token} = ChatchatAuth.issue(user.id)
 
     conn =
       build_conn()
@@ -56,7 +55,7 @@ defmodule ChatchatWeb.UserControllerTest do
 
   test "GET /api/user/search requires the exact Bearer scheme" do
     assert {:ok, user} = Accounts.register_user("alice", "correct horse")
-    %{access_token: token} = AuthToken.issue(user.id)
+    %{access_token: token} = ChatchatAuth.issue(user.id)
 
     conn =
       build_conn()

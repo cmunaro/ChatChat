@@ -1,5 +1,13 @@
 import Config
 
+secret_key_base =
+  System.get_env(
+    "SECRET_KEY_BASE",
+    "1234567890123456789012345678901234567890123456789012345678901234"
+  )
+
+config :chatchat_auth, secret_key_base: secret_key_base
+
 config :open_api_spex, :cache_adapter, OpenApiSpex.Plug.NoneCache
 
 config :chatchat_broker, ChatchatBroker.Repo,
@@ -10,11 +18,7 @@ config :chatchat_broker, ChatchatBroker.Repo,
 
 config :chatchat_web, ChatchatWeb.Endpoint,
   http: [ip: {0, 0, 0, 0}, port: String.to_integer(System.get_env("PORT", "4000"))],
-  secret_key_base:
-    System.get_env(
-      "SECRET_KEY_BASE",
-      "1234567890123456789012345678901234567890123456789012345678901234"
-    ),
+  secret_key_base: secret_key_base,
   server: true,
   check_origin: false,
   debug_errors: true,

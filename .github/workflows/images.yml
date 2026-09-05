@@ -27,6 +27,7 @@ jobs:
         release:
           - chatchat_web
           - chatchat_broker
+          - chatchat_tcp
 
     steps:
       - name: Check out repository

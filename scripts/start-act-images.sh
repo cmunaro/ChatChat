@@ -20,14 +20,16 @@ load_env_file
 
 web_image="${WEB_IMAGE:-chatchat_web:act}"
 broker_image="${BROKER_IMAGE:-chatchat_broker:act}"
+tcp_image="${TCP_IMAGE:-chatchat_tcp:act}"
 web_port="${PORT:-4000}"
+tcp_port="${TCP_PORT:-4040}"
 postgres_db="${POSTGRES_DB:-chatchat_dev}"
 postgres_user="${POSTGRES_USER:-chatchat}"
 postgres_password="${POSTGRES_PASSWORD:-chatchat}"
 database_url="ecto://${postgres_user}:${postgres_password}@db:5432/${postgres_db}"
 secret_key_base="${SECRET_KEY_BASE:-$(openssl rand -hex 64)}"
 
-for image in "$web_image" "$broker_image"; do
+for image in "$web_image" "$broker_image" "$tcp_image"; do
   if ! docker image inspect "$image" >/dev/null 2>&1; then
     echo "Image $image does not exist. Run: act push -W .github/workflows/images.yml" >&2
     exit 1
@@ -48,7 +50,7 @@ docker run --rm \
   --env "SECRET_KEY_BASE=$secret_key_base" \
   "$web_image" eval 'ChatchatBroker.Release.migrate()'
 
-for container in chatchat-broker chatchat-web; do
+for container in chatchat-broker chatchat-web chatchat-tcp; do
   if docker container inspect "$container" >/dev/null 2>&1; then
     docker rm --force "$container" >/dev/null
   fi
@@ -70,5 +72,15 @@ docker run --detach \
   --env "SECRET_KEY_BASE=$secret_key_base" \
   "$web_image" >/dev/null
 
+docker run --detach \
+  --name chatchat-tcp \
+  --restart unless-stopped \
+  --network chatchat_default \
+  --publish "$tcp_port:4040" \
+  --env "SECRET_KEY_BASE=$secret_key_base" \
+  --env "TCP_PORT=4040" \
+  "$tcp_image" >/dev/null
+
 echo "ChatChat is running at http://localhost:$web_port"
-echo "Logs: docker logs -f chatchat-web"
+echo "Authenticated TCP connections are accepted at localhost:$tcp_port"
+echo "Logs: docker logs -f chatchat-web or docker logs -f chatchat-tcp"

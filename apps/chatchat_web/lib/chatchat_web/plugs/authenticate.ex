@@ -1,13 +1,12 @@
 defmodule ChatchatWeb.Plugs.Authenticate do
   import Plug.Conn
-  alias ChatchatWeb.AuthToken
 
   def init(options), do: options
 
   def call(conn, _options) do
     case get_req_header(conn, "authorization") do
       ["Bearer " <> token] ->
-        case AuthToken.verify(token) do
+        case ChatchatAuth.verify(token) do
           {:ok, user_id} -> assign(conn, :current_user_id, user_id)
           {:error, _reason} -> unauthorized(conn)
         end
