@@ -8,3 +8,4 @@ Open connection: `nc localhost 4040`
 
 Login: `{"type":"authenticate","token":"ACCESS_TOKEN"}`
 
+Get user online status: `{"type":"is_online", "user_id":123}`

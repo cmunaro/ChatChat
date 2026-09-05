@@ -68,6 +68,16 @@ defmodule ChatchatTcp.Handler do
     end
   end
 
+  defp process_frame(frame, socket, %{user_id: _user_id} = state) do
+    with {:ok, %{"type" => type} = request} <- Jason.decode(frame),
+         :ok <- handle_request(socket, type, request) do
+      continue(state)
+    else
+      {:error, reason} when is_binary(reason) -> close_with_error(socket, state, reason)
+      _ -> close_with_error(socket, state, "not handled")
+    end
+  end
+
   defp process_frame(_frame, socket, state) do
     close_with_error(socket, state, "not handled")
   end
@@ -87,4 +97,13 @@ defmodule ChatchatTcp.Handler do
   defp send_json(socket, payload) do
     Socket.send(socket, Jason.encode!(payload) <> "\n")
   end
+
+  defp handle_request(socket, "is_online", request) do
+    user_id = Map.get(request, "user_id")
+    is_online = Presence.online?(user_id)
+    send_json(socket, %{is_online: is_online})
+    :ok
+  end
+
+  defp handle_request(_, _, _), do: {:error, "not handled"}
 end

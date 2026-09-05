@@ -73,10 +73,37 @@ defmodule ChatchatTcpTest do
     assert {:error, :closed} = :gen_tcp.recv(socket, 0, 1_000)
   end
 
+  test "reports a connected user as online" do
+    user_id = 45
+    socket = connect_and_authenticate(user_id)
+
+    :ok = :gen_tcp.send(socket, Jason.encode!(%{type: "is_online", user_id: user_id}) <> "\n")
+
+    assert {:ok, %{"is_online" => true}} = recv_json(socket)
+    :ok = :gen_tcp.close(socket)
+  end
+
+  test "reports a user without a connection as offline" do
+    socket = connect_and_authenticate(46)
+
+    :ok = :gen_tcp.send(socket, Jason.encode!(%{type: "is_online", user_id: 47}) <> "\n")
+
+    assert {:ok, %{"is_online" => false}} = recv_json(socket)
+    :ok = :gen_tcp.close(socket)
+  end
+
   defp connect do
     {:ok, socket} =
       :gen_tcp.connect(~c"localhost", ChatchatTcp.port(), [:binary, active: false, packet: :raw])
 
+    socket
+  end
+
+  defp connect_and_authenticate(user_id) do
+    %{access_token: token} = ChatchatAuth.issue(user_id)
+    socket = connect()
+    :ok = :gen_tcp.send(socket, Jason.encode!(%{type: "authenticate", token: token}) <> "\n")
+    assert {:ok, %{"type" => "authenticated", "user_id" => ^user_id}} = recv_json(socket)
     socket
   end
 
