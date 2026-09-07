@@ -105,5 +105,10 @@ defmodule ChatchatTcp.Handler do
     :ok
   end
 
+  defp handle_request(socket, "ping", _request) do
+    send_json(socket, %{type: "pong"})
+    :ok
+  end
+
   defp handle_request(_, _, _), do: {:error, "not handled"}
 end
