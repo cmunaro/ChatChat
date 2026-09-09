@@ -1,10 +1,12 @@
 defmodule ChatchatClient do
   use GenServer
+  require Logger
 
   @http_url "http://localhost:4000"
   @tcp_host ~c"localhost"
   @tcp_port 4040
   @password "chatchat-client-password"
+  @poll_interval 250
   @ping_interval 30_000
   @reconnect_interval 1_000
   @timeout 10_000
@@ -27,8 +29,13 @@ defmodule ChatchatClient do
     GenServer.call(client, {:is_online, user_id})
   end
 
+  def send_message(client, user_id, message) when is_integer(user_id) and is_binary(message) do
+    GenServer.call(client, {:send_message, user_id, message})
+  end
+
   @impl true
   def init(state) do
+    poll()
     ping()
     {:ok, state}
   end
@@ -51,6 +58,21 @@ defmodule ChatchatClient do
     end
   end
 
+  def handle_call({:send_message, user_id, message}, _from, state) do
+    request = %{type: "send_message", user_id: user_id, message: message}
+
+    case socket_request(state.socket, request) do
+      {:ok, %{"type" => "message_sent", "delivered" => delivered}} ->
+        {:reply, {:ok, delivered}, state}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, close_and_reconnect(state)}
+
+      response ->
+        {:reply, {:error, {:unexpected_response, response}}, close_and_reconnect(state)}
+    end
+  end
+
   @impl true
   def handle_info(:ping, state) do
     case socket_request(state.socket, %{type: "ping"}) do
@@ -61,6 +83,27 @@ defmodule ChatchatClient do
       _ ->
         {:noreply, close_and_reconnect(state)}
     end
+  end
+
+  def handle_info(:poll, %{socket: socket} = state) when not is_nil(socket) do
+    case :gen_tcp.recv(socket, 0, 0) do
+      {:ok, line} ->
+        log_message(line)
+        poll()
+        {:noreply, state}
+
+      {:error, :timeout} ->
+        poll()
+        {:noreply, state}
+
+      {:error, _reason} ->
+        {:noreply, close_and_reconnect(state)}
+    end
+  end
+
+  def handle_info(:poll, state) do
+    poll()
+    {:noreply, state}
   end
 
   def handle_info(:reconnect, %{socket: nil} = state) do
@@ -147,8 +190,32 @@ defmodule ChatchatClient do
 
   defp socket_request(socket, request) do
     with :ok <- send_frame(socket, request),
-         {:ok, response} <- receive_frame(socket) do
+         {:ok, response} <- receive_response(socket) do
       {:ok, response}
+    end
+  end
+
+  defp receive_response(socket) do
+    case receive_frame(socket) do
+      {:ok, %{"type" => "message", "from_user_id" => user_id, "message" => message}} ->
+        Logger.info("Message from #{user_id}: #{message}")
+        receive_response(socket)
+
+      response ->
+        response
+    end
+  end
+
+  defp log_message(line) do
+    case Jason.decode(String.trim_trailing(line, "\n")) do
+      {:ok, %{"type" => "message", "from_user_id" => user_id, "message" => message}} ->
+        Logger.info("Message from #{user_id}: #{message}")
+
+      {:ok, response} ->
+        Logger.warning("Unexpected response: #{inspect(response)}")
+
+      {:error, reason} ->
+        Logger.warning("Invalid response: #{inspect(reason)}")
     end
   end
 
@@ -170,5 +237,6 @@ defmodule ChatchatClient do
   end
 
   defp ping, do: Process.send_after(self(), :ping, @ping_interval)
+  defp poll, do: Process.send_after(self(), :poll, @poll_interval)
   defp reconnect, do: Process.send_after(self(), :reconnect, @reconnect_interval)
 end

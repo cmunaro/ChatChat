@@ -92,6 +92,23 @@ defmodule ChatchatTcpTest do
     :ok = :gen_tcp.close(socket)
   end
 
+  test "delivers a message to an online user" do
+    sender = connect_and_authenticate(48)
+    receiver = connect_and_authenticate(49)
+
+    request = %{type: "send_message", user_id: 49, message: "hello"}
+    :ok = :gen_tcp.send(sender, Jason.encode!(request) <> "\n")
+
+    assert {:ok, %{"type" => "message_sent", "user_id" => 49, "delivered" => true}} =
+             recv_json(sender)
+
+    assert {:ok, %{"type" => "message", "from_user_id" => 48, "message" => "hello"}} =
+             recv_json(receiver)
+
+    :ok = :gen_tcp.close(sender)
+    :ok = :gen_tcp.close(receiver)
+  end
+
   defp connect do
     {:ok, socket} =
       :gen_tcp.connect(~c"localhost", ChatchatTcp.port(), [:binary, active: false, packet: :raw])

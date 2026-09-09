@@ -68,9 +68,9 @@ defmodule ChatchatTcp.Handler do
     end
   end
 
-  defp process_frame(frame, socket, %{user_id: _user_id} = state) do
+  defp process_frame(frame, socket, %{user_id: user_id} = state) do
     with {:ok, %{"type" => type} = request} <- Jason.decode(frame),
-         :ok <- handle_request(socket, type, request) do
+         :ok <- handle_request(socket, user_id, type, request) do
       continue(state)
     else
       {:error, reason} when is_binary(reason) -> close_with_error(socket, state, reason)
@@ -98,17 +98,35 @@ defmodule ChatchatTcp.Handler do
     Socket.send(socket, Jason.encode!(payload) <> "\n")
   end
 
-  defp handle_request(socket, "is_online", request) do
+  @impl GenServer
+  def handle_info({:message, from_user_id, message}, {socket, state}) do
+    send_json(socket, %{type: "message", from_user_id: from_user_id, message: message})
+    {:noreply, {socket, state}}
+  end
+
+  defp handle_request(socket, _current_user_id, "is_online", request) do
     user_id = Map.get(request, "user_id")
     is_online = Presence.online?(user_id)
     send_json(socket, %{is_online: is_online})
     :ok
   end
 
-  defp handle_request(socket, "ping", _request) do
+  defp handle_request(socket, _current_user_id, "ping", _request) do
     send_json(socket, %{type: "pong"})
     :ok
   end
 
-  defp handle_request(_, _, _), do: {:error, "not handled"}
+  defp handle_request(
+         socket,
+         current_user_id,
+         "send_message",
+         %{"user_id" => user_id, "message" => message}
+       )
+       when is_integer(user_id) and is_binary(message) do
+    delivered = Presence.deliver(user_id, current_user_id, message)
+    send_json(socket, %{type: "message_sent", user_id: user_id, delivered: delivered})
+    :ok
+  end
+
+  defp handle_request(_, _, _, _), do: {:error, "not handled"}
 end
