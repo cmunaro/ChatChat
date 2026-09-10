@@ -5,6 +5,8 @@ secret_key_base = "1234567890123456789012345678901234567890123456789012345678901
 config :chatchat_auth, secret_key_base: secret_key_base
 
 config :chatchat_tcp,
+  redis_url: System.get_env("TEST_REDIS_URL", "redis://localhost:6379/15"),
+  admission: [pending_ttl: 100],
   server: [transport_options: [ip: {127, 0, 0, 1}], port: 0, read_timeout: 1_000],
   handler: [authentication_timeout: 100, max_frame_size: 1_024]
 

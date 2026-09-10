@@ -3,6 +3,11 @@ defmodule ChatchatTcpTest do
 
   alias ChatchatTcp.Presence
 
+  setup do
+    {:ok, "OK"} = Redix.command(ChatchatTcp.Redis, ["FLUSHDB"])
+    :ok
+  end
+
   test "authenticates with an HTTP access token and tracks socket presence" do
     user_id = 42
     %{access_token: token} = ChatchatAuth.issue(user_id)
@@ -92,21 +97,103 @@ defmodule ChatchatTcpTest do
     :ok = :gen_tcp.close(socket)
   end
 
-  test "delivers a message to an online user" do
+  test "admits a message and confirms its acceptance without delivering it" do
     sender = connect_and_authenticate(48)
     receiver = connect_and_authenticate(49)
 
-    request = %{type: "send_message", user_id: 49, message: "hello"}
+    request = %{type: "send_message", request_id: "request-1", user_id: 49, message: "hello"}
     :ok = :gen_tcp.send(sender, Jason.encode!(request) <> "\n")
 
-    assert {:ok, %{"type" => "message_sent", "user_id" => 49, "delivered" => true}} =
+    assert {:ok,
+            %{
+              "type" => "message_admitted",
+              "request_id" => "request-1",
+              "message_id" => message_id
+            }} = recv_json(sender)
+
+    assert {:error, :timeout} = :gen_tcp.recv(receiver, 0, 50)
+
+    ack = %{type: "message_accepted_ack", request_id: "request-1", message_id: message_id}
+    :ok = :gen_tcp.send(sender, Jason.encode!(ack) <> "\n")
+
+    assert {:ok, %{"type" => "message_accepted_ack_confirmed", "message_id" => ^message_id}} =
              recv_json(sender)
 
-    assert {:ok, %{"type" => "message", "from_user_id" => 48, "message" => "hello"}} =
-             recv_json(receiver)
+    request_id = Base.url_encode64("request-1", padding: false)
+
+    assert {:ok, encoded} =
+             Redix.command(ChatchatTcp.Redis, [
+               "GET",
+               "chatchat:{admission}:sending:48:#{request_id}"
+             ])
+
+    assert %{"message_id" => ^message_id} = Jason.decode!(encoded)
+
+    :ok = :gen_tcp.send(sender, Jason.encode!(ack) <> "\n")
+
+    assert {:ok, %{"type" => "message_accepted_ack_confirmed", "message_id" => ^message_id}} =
+             recv_json(sender)
 
     :ok = :gen_tcp.close(sender)
     :ok = :gen_tcp.close(receiver)
+  end
+
+  test "repeating a pending request replaces it" do
+    sender = connect_and_authenticate(50)
+    request = %{type: "send_message", request_id: "request-2", user_id: 51, message: "hello"}
+
+    :ok = :gen_tcp.send(sender, Jason.encode!(request) <> "\n")
+
+    assert {:ok, %{"type" => "message_admitted", "message_id" => message_id}} =
+             recv_json(sender)
+
+    :ok = :gen_tcp.send(sender, Jason.encode!(request) <> "\n")
+
+    assert {:ok, %{"type" => "message_admitted", "message_id" => replacement_id}} =
+             recv_json(sender)
+
+    refute replacement_id == message_id
+
+    changed_request = %{request | message: "different"}
+    :ok = :gen_tcp.send(sender, Jason.encode!(changed_request) <> "\n")
+
+    assert {:ok, %{"type" => "message_admitted", "message_id" => changed_id}} = recv_json(sender)
+    refute changed_id in [message_id, replacement_id]
+
+    :ok = :gen_tcp.close(sender)
+  end
+
+  test "an expired pending message returns an error and can be resent with the same request id" do
+    sender = connect_and_authenticate(52)
+    other_user = connect_and_authenticate(53)
+
+    request = %{type: "send_message", request_id: "request-3", user_id: 54, message: "hello"}
+    :ok = :gen_tcp.send(sender, Jason.encode!(request) <> "\n")
+
+    assert {:ok, %{"type" => "message_admitted", "message_id" => message_id}} =
+             recv_json(sender)
+
+    ack = %{type: "message_accepted_ack", request_id: "request-3", message_id: message_id}
+    :ok = :gen_tcp.send(other_user, Jason.encode!(ack) <> "\n")
+    assert {:ok, %{"type" => "error", "error" => "unknown_message"}} = recv_json(other_user)
+
+    Process.sleep(110)
+    :ok = :gen_tcp.send(sender, Jason.encode!(ack) <> "\n")
+    assert {:ok, %{"type" => "error", "error" => "unknown_message"}} = recv_json(sender)
+
+    :ok = :gen_tcp.send(sender, Jason.encode!(request) <> "\n")
+
+    assert {:ok,
+            %{
+              "type" => "message_admitted",
+              "request_id" => "request-3",
+              "message_id" => new_message_id
+            }} = recv_json(sender)
+
+    refute new_message_id == message_id
+
+    :ok = :gen_tcp.close(sender)
+    :ok = :gen_tcp.close(other_user)
   end
 
   defp connect do

@@ -9,6 +9,8 @@ defmodule ChatchatTcp.Application do
 
     children = [
       {Registry, keys: :duplicate, name: ChatchatTcp.Presence.Registry},
+      {Redix, redis_options()},
+      ChatchatTcp.MessageAdmission,
       {ThousandIsland,
        Keyword.merge(tcp_options,
          handler_module: ChatchatTcp.Handler,
@@ -18,5 +20,12 @@ defmodule ChatchatTcp.Application do
     ]
 
     Supervisor.start_link(children, strategy: :one_for_one, name: ChatchatTcp.Supervisor)
+  end
+
+  defp redis_options do
+    {
+      Application.fetch_env!(:chatchat_tcp, :redis_url),
+      name: ChatchatTcp.Redis
+    }
   end
 end

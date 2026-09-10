@@ -1,5 +1,6 @@
 defmodule ChatchatClient do
   use GenServer
+  import Bitwise
   require Logger
 
   @http_url "http://localhost:4000"
@@ -11,12 +12,18 @@ defmodule ChatchatClient do
   @reconnect_interval 1_000
   @timeout 10_000
 
+  @spec run(binary()) :: pid()
   def run(username) when is_binary(username) do
     with :ok <- register(username),
          {:ok, token} <- login(username),
-         {:ok, socket, _user_id} <- open_socket(token),
+         {:ok, socket, user_id} <- open_socket(token),
          {:ok, pid} <-
-           GenServer.start(__MODULE__, %{username: username, token: token, socket: socket}) do
+           GenServer.start(__MODULE__, %{
+             username: username,
+             user_id: user_id,
+             token: token,
+             socket: socket
+           }) do
       pid
     else
       {:error, reason} -> raise "could not start client: #{inspect(reason)}"
@@ -29,9 +36,14 @@ defmodule ChatchatClient do
     GenServer.call(client, {:is_online, user_id})
   end
 
-  def send_message(client, user_id, message) when is_integer(user_id) and is_binary(message) do
-    GenServer.call(client, {:send_message, user_id, message})
+  @spec send_message(from :: pid(), to :: pid(), message :: String.t()) ::
+          :ok | {:error, term()}
+  def send_message(from, to, message) when is_pid(from) and is_pid(to) and is_binary(message) do
+    user_id = GenServer.call(to, :user_id)
+    GenServer.call(from, {:send_message, user_id, message})
   end
+
+  def send_message(_, _, _), do: {:error, :invalid_params}
 
   @impl true
   def init(state) do
@@ -44,6 +56,8 @@ defmodule ChatchatClient do
   def handle_call({:search, name}, _from, state) do
     {:reply, search_users(state.token, name), state}
   end
+
+  def handle_call(:user_id, _from, state), do: {:reply, state.user_id, state}
 
   def handle_call({:is_online, user_id}, _from, state) do
     case socket_request(state.socket, %{type: "is_online", user_id: user_id}) do
@@ -59,17 +73,50 @@ defmodule ChatchatClient do
   end
 
   def handle_call({:send_message, user_id, message}, _from, state) do
-    request = %{type: "send_message", user_id: user_id, message: message}
+    request_id = uuid4()
+
+    request = %{
+      type: "send_message",
+      request_id: request_id,
+      user_id: user_id,
+      message: message
+    }
 
     case socket_request(state.socket, request) do
-      {:ok, %{"type" => "message_sent", "delivered" => delivered}} ->
-        {:reply, {:ok, delivered}, state}
+      {:ok,
+       %{
+         "type" => "message_admitted",
+         "request_id" => ^request_id,
+         "message_id" => message_id
+       }} ->
+        ack = %{
+          type: "message_accepted_ack",
+          request_id: request_id,
+          message_id: message_id
+        }
+
+        case socket_request(state.socket, ack) do
+          {:ok, %{"type" => "message_accepted_ack_confirmed", "message_id" => ^message_id}} ->
+            {:reply, :ok, state}
+
+          {:ok, %{"type" => "error", "error" => error}} ->
+            {:reply, {:error, error}, state}
+
+          {:error, reason} ->
+            {:reply, {:error, reason}, state}
+
+          response ->
+            {:reply, {:error, {:unexpected_response, response}}, state}
+        end
+
+      {:ok, %{"type" => "error", "error" => error}} ->
+        {:reply, {:error, error}, state}
 
       {:error, reason} ->
-        {:reply, {:error, reason}, close_and_reconnect(state)}
+        {:reply, {:error, reason}, state}
 
       response ->
-        {:reply, {:error, {:unexpected_response, response}}, close_and_reconnect(state)}
+        {:reply, {:error, {:unexpected_response, response}}, state}
     end
   end
 
@@ -234,6 +281,20 @@ defmodule ChatchatClient do
     if state.socket, do: :gen_tcp.close(state.socket)
     reconnect()
     %{state | socket: nil}
+  end
+
+  defp uuid4 do
+    <<a::48, version, middle, variant, rest::56>> = :crypto.strong_rand_bytes(16)
+
+    bytes =
+      <<a::48, (version &&& 0x0F) ||| 0x40, middle, (variant &&& 0x3F) ||| 0x80, rest::56>>
+
+    hex = Base.encode16(bytes, case: :lower)
+
+    <<p1::binary-size(8), p2::binary-size(4), p3::binary-size(4), p4::binary-size(4), p5::binary>> =
+      hex
+
+    Enum.join([p1, p2, p3, p4, p5], "-")
   end
 
   defp ping, do: Process.send_after(self(), :ping, @ping_interval)

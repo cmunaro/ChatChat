@@ -25,6 +25,7 @@ defmodule ChatchatClient.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
+      {:ecto, "~> 3.14"},
       {:jason, "~> 1.4"}
     ]
   end

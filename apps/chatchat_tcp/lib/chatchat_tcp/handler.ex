@@ -1,7 +1,7 @@
 defmodule ChatchatTcp.Handler do
   use ThousandIsland.Handler
 
-  alias ChatchatTcp.Presence
+  alias ChatchatTcp.{MessageAdmission, Presence}
   alias ThousandIsland.Socket
 
   @impl ThousandIsland.Handler
@@ -120,11 +120,44 @@ defmodule ChatchatTcp.Handler do
          socket,
          current_user_id,
          "send_message",
-         %{"user_id" => user_id, "message" => message}
+         %{"request_id" => request_id, "user_id" => user_id, "message" => message}
        )
-       when is_integer(user_id) and is_binary(message) do
-    delivered = Presence.deliver(user_id, current_user_id, message)
-    send_json(socket, %{type: "message_sent", user_id: user_id, delivered: delivered})
+       when is_binary(request_id) and request_id != "" and byte_size(request_id) <= 128 and
+              is_integer(user_id) and is_binary(message) do
+    case MessageAdmission.prepare_message_sending(current_user_id, request_id, user_id, message) do
+      {:ok, message_id} ->
+        send_json(socket, %{
+          type: "message_admitted",
+          request_id: request_id,
+          message_id: message_id
+        })
+
+      {:error, :unavailable} ->
+        send_json(socket, %{type: "error", error: "admission_unavailable"})
+    end
+
+    :ok
+  end
+
+  defp handle_request(
+         socket,
+         current_user_id,
+         "message_accepted_ack",
+         %{"request_id" => request_id, "message_id" => message_id}
+       )
+       when is_binary(request_id) and request_id != "" and is_binary(message_id) and
+              message_id != "" do
+    case MessageAdmission.confirm_message_id_attribution(current_user_id, request_id, message_id) do
+      {:ok, ^message_id} ->
+        send_json(socket, %{type: "message_accepted_ack_confirmed", message_id: message_id})
+
+      {:error, :unknown_message} ->
+        send_json(socket, %{type: "error", error: "unknown_message"})
+
+      {:error, :unavailable} ->
+        send_json(socket, %{type: "error", error: "admission_unavailable"})
+    end
+
     :ok
   end
 

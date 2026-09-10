@@ -21,5 +21,21 @@ services:
       retries: 10
       start_period: 5s
 
+  redis:
+    image: redis:8.10.1-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "always"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
 volumes:
   postgres_data:
+  redis_data:
