@@ -18,7 +18,7 @@ config :chatchat_auth,
 
 config :chatchat_tcp,
   redis_url: "redis://localhost:6379",
-  admission: [pending_ttl: 60_000],
+  admission: [pending_ttl: 60_000, delivery_window: 20_000],
   server: [transport_options: [ip: {0, 0, 0, 0}], port: 4040, read_timeout: 60_000],
   handler: [authentication_timeout: 5_000, max_frame_size: 8_192]
 

@@ -119,20 +119,41 @@ defmodule ChatchatTcpTest do
     assert {:ok, %{"type" => "message_accepted_ack_confirmed", "message_id" => ^message_id}} =
              recv_json(sender)
 
-    request_id = Base.url_encode64("request-1", padding: false)
-
     assert {:ok, encoded} =
              Redix.command(ChatchatTcp.Redis, [
                "GET",
-               "chatchat:{admission}:sending:48:#{request_id}"
+               "chatchat:sending:49:#{message_id}"
              ])
 
-    assert %{"message_id" => ^message_id} = Jason.decode!(encoded)
+    assert %{
+             "message_id" => ^message_id,
+             "sender_id" => 48,
+             "recipient_id" => 49,
+             "message" => "hello"
+           } = Jason.decode!(encoded)
+
+    assert {:ok, score} =
+             Redix.command(ChatchatTcp.Redis, [
+               "ZSCORE",
+               "chatchat:sending_deadlines",
+               "chatchat:sending:49:#{message_id}"
+             ])
+
+    assert is_binary(score)
 
     :ok = :gen_tcp.send(sender, Jason.encode!(ack) <> "\n")
 
     assert {:ok, %{"type" => "message_accepted_ack_confirmed", "message_id" => ^message_id}} =
              recv_json(sender)
+
+    :ok = :gen_tcp.send(sender, Jason.encode!(request) <> "\n")
+
+    assert {:ok,
+            %{
+              "type" => "message_admitted",
+              "request_id" => "request-1",
+              "message_id" => ^message_id
+            }} = recv_json(sender)
 
     :ok = :gen_tcp.close(sender)
     :ok = :gen_tcp.close(receiver)

@@ -1,8 +1,8 @@
-# Message admission
+# Message delivery
 
-The current implementation covers only message admission and confirmation by the sender. It does not yet deliver messages to recipients or persist offline messages in PostgreSQL.
+Messages remain in Redis for a 20-second online-delivery window. Messages not acknowledged during that window are moved to PostgreSQL for future delivery.
 
-## Protocol
+## Message acceptance
 
 ```mermaid
 sequenceDiagram
@@ -10,109 +10,124 @@ sequenceDiagram
     participant BE as Backend
     participant Redis
 
-    C1->>BE: send_message(request_id, recipient_id, message)
+    C1->>BE: send_message(request_id, receiver_id, message)
     BE->>BE: Read sender_id from authenticated socket
-    BE->>Redis: GET sending:{sender_id}:{request_id}
-
-    alt Already confirmed
-        Redis-->>BE: Stored message
-        BE-->>C1: message_admitted(request_id, existing message_id)
-    else Not confirmed
-        Redis-->>BE: nil
-        BE->>BE: Generate message_id
-        BE->>Redis: SET pending:{sender_id}:{request_id} message PX ttl
-        Redis-->>BE: OK
-        BE-->>C1: message_admitted(request_id, message_id)
-    end
+    BE->>BE: Generate message_id
+    BE->>Redis: SET pending:<sender_id>:<request_id> PX admission_ttl
+    Redis-->>BE: OK
+    BE-->>C1: message_admitted(request_id, message_id)
 
     C1->>BE: message_accepted_ack(request_id, message_id)
     BE->>Redis: EVALSHA confirmation script
 
-    alt Matching entry already exists in sending
-        Redis-->>BE: 1
-        BE-->>C1: message_accepted_ack_confirmed(message_id)
-    else Matching entry exists in pending
-        Redis->>Redis: SET sending entry
-        Redis->>Redis: ZADD message_id to sending index
+    alt Pending attribution matches
+        Redis->>Redis: SET sending:<receiver_id>:<message_id>
+        Redis->>Redis: ZADD sending_deadlines now + 20 seconds
+        Redis->>Redis: Store confirmed request attribution
         Redis->>Redis: DEL pending entry
-        Redis-->>BE: 1
+        Redis-->>BE: accepted
         BE-->>C1: message_accepted_ack_confirmed(message_id)
-    else Entry is absent or message_id does not match
-        Redis-->>BE: 0
+    else ACK was already confirmed
+        Redis-->>BE: accepted
+        BE-->>C1: message_accepted_ack_confirmed(message_id)
+    else Pending entry expired or does not match
+        Redis-->>BE: unknown
         BE-->>C1: error(unknown_message)
     end
 ```
 
-## Redis data
-
-### Pending entry
-
-Key:
+The confirmation script creates these entries atomically:
 
 ```text
-chatchat:{admission}:pending:<sender_id>:<base64url(request_id)>
+sending:<receiver_id>:<message_id> -> sender_id, receiver_id, message
+sending_deadlines                  -> score: expires_at_ms, member: sending key
 ```
 
-Value:
+The pending entry remains keyed by `sender_id + request_id` because it identifies the sender's admission request. A confirmed-request attribution is retained long enough to make repeated acknowledgements idempotent.
 
-```json
-{
-  "message_id": "server-generated UUID",
-  "sender_id": 1,
-  "request_id": "client-generated ID",
-  "recipient_id": 2,
-  "message": "payload"
-}
+The script is loaded at startup and called with `EVALSHA`. On `NOSCRIPT`, the backend loads it again and retries once.
+
+## Delivery worker
+
+```mermaid
+sequenceDiagram
+    participant Redis
+    participant DW as Delivery worker
+    participant C2 as Receiver
+
+    Redis-->>DW: Newly confirmed message
+
+    alt Receiver is online
+        DW->>C2: message(message_id, sender_id, payload)
+        C2-->>DW: message_delivered_ack(message_id)
+        DW->>Redis: Atomically DEL message and ZREM deadline
+        DW-->>C2: message_delivered_ack_confirmed(message_id)
+    else Receiver is offline
+        DW->>Redis: Leave message until reconnect or deadline
+    end
+
+    opt Receiver connects during the delivery window
+        DW->>Redis: SCAN MATCH sending:<receiver_id>:*
+        Redis-->>DW: Receiver backlog
+        DW->>C2: Send each message
+    end
 ```
 
-The pending entry has the configured `pending_ttl`. Sending the same request ID again before confirmation replaces the pending value and receives a new message ID.
+The delivery worker receives newly confirmed messages directly; it does not scan the whole Redis database. A receiver-specific `SCAN` is used only when that receiver connects, and the number of messages under that prefix is expected to be limited.
 
-### Sending entry
+The `message_id` is included in every delivery and acknowledgement. An acknowledgement removes both the message key and its `sending_deadlines` member atomically.
 
-Key:
+## Persistence worker
+
+```mermaid
+sequenceDiagram
+    participant PW as Persistence worker
+    participant Redis
+    participant DB as PostgreSQL
+
+    PW->>Redis: ZRANGEBYSCORE sending_deadlines -inf now LIMIT 0 batch_size
+    Redis-->>PW: Only expired message keys
+
+    loop Each bounded batch
+        PW->>Redis: Atomically claim expired entries
+        Redis-->>PW: Claimed payloads
+        PW->>DB: Repo.insert_all(messages, on_conflict: nothing)
+
+        alt PostgreSQL commit succeeds
+            DB-->>PW: committed
+            PW->>Redis: Delete claimed payloads and index entries
+        else PostgreSQL fails
+            DB-->>PW: error
+            PW->>Redis: Release claims for retry
+        end
+    end
+```
+
+The worker never runs `SCAN`. The sorted set is the expiration index, so finding expired messages costs approximately `O(log N + batch_size)`.
+
+Messages are handled in fixed-size batches:
+
+1. Read expired members from `sending_deadlines`.
+2. Atomically claim them so the delivery worker cannot start another delivery.
+3. Fetch their payloads with a Redis pipeline.
+4. Insert the batch with `Repo.insert_all/3`.
+5. Use `message_id` as a PostgreSQL unique key and `on_conflict: :nothing`.
+6. Remove Redis data only after PostgreSQL commits.
+
+Claims must remain recoverable in Redis until the database commit. If the backend crashes, the persistence worker can reclaim stale claims. A recipient acknowledgement racing with persistence must be resolved idempotently against the claimed message.
+
+When a query returns a full batch, the worker immediately requests another one. Otherwise, it reads the earliest deadline and schedules itself for that time instead of polling every second.
+
+## PostgreSQL message
+
+The stored record needs at least:
 
 ```text
-chatchat:{admission}:sending:<sender_id>:<base64url(request_id)>
+message_id
+sender_id
+receiver_id
+payload
+inserted_at
 ```
 
-The value is copied unchanged from the pending entry. It currently has no expiration.
-
-### Sending index
-
-Key:
-
-```text
-chatchat:{admission}:sending
-```
-
-This is a sorted set containing message IDs. Its score is the server timestamp in milliseconds at confirmation time.
-
-The `{admission}` hash tag keeps all keys used by the Lua script in one Redis Cluster slot.
-
-## Atomic confirmation
-
-`confirm_message_id_attribution.lua` performs the confirmation atomically:
-
-1. If the sending entry already contains the supplied message ID, return success. This makes repeated acknowledgements idempotent.
-2. Otherwise, require a pending entry containing that message ID.
-3. Copy pending to sending, add the message ID to the sending index, and delete pending.
-4. Return failure when the entry is missing, expired, replaced, or has a different message ID.
-
-The backend loads the script at startup and normally calls it with `EVALSHA`. If Redis has discarded its script cache, the backend handles `NOSCRIPT` by loading the script and retrying once.
-
-Calls go directly through the shared Redix connection rather than through the `MessageAdmission` GenServer, so confirmations are not serialized by one BE process.
-
-## Current retry behavior
-
-- If the sender does not receive `message_admitted`, it may send the message again with the same request ID. While the entry is pending, this replaces it and produces a new message ID.
-- If the sender does not receive `message_accepted_ack_confirmed`, it may repeat the acknowledgement with the same request ID and message ID.
-- If confirmation returns `unknown_message`, the pending entry either expired, was replaced, or does not match. The sender must submit the message again.
-
-## Not implemented
-
-- Forwarding confirmed messages to online recipients.
-- Recipient delivery acknowledgements.
-- Moving undelivered messages to PostgreSQL.
-- Replaying stored messages when a recipient reconnects.
-- Reporting delivered or queued status to the sender.
-- Removing completed entries from the sending table and index.
+`message_id` is unique. This makes retries safe if PostgreSQL commits but the backend crashes before cleaning Redis.

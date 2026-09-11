@@ -25,7 +25,10 @@ if config_env() == :prod do
   if release_name == "chatchat_tcp" do
     config :chatchat_tcp,
       redis_url: System.get_env("REDIS_URL", "redis://localhost:6379"),
-      admission: [pending_ttl: String.to_integer(System.get_env("ADMISSION_TTL", "60000"))],
+      admission: [
+        pending_ttl: String.to_integer(System.get_env("ADMISSION_TTL", "60000")),
+        delivery_window: String.to_integer(System.get_env("DELIVERY_WINDOW", "20000"))
+      ],
       server: [
         transport_options: [ip: {0, 0, 0, 0}],
         port: String.to_integer(System.get_env("TCP_PORT", "4040")),
