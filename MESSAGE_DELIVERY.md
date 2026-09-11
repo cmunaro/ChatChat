@@ -13,7 +13,7 @@ sequenceDiagram
     C1->>BE: send_message(request_id, receiver_id, message)
     BE->>BE: Read sender_id from authenticated socket
     BE->>BE: Generate message_id
-    BE->>Redis: SET pending:<sender_id>:<request_id> PX admission_ttl
+    BE->>Redis: SET chatchat:{admission}:pending:<sender_id>:<base64url(request_id)> PX admission_ttl
     Redis-->>BE: OK
     BE-->>C1: message_admitted(request_id, message_id)
 
@@ -21,13 +21,11 @@ sequenceDiagram
     BE->>Redis: EVALSHA confirmation script
 
     alt Pending attribution matches
-        Redis->>Redis: SET sending:<receiver_id>:<message_id>
-        Redis->>Redis: ZADD sending_deadlines now + 20 seconds
-        Redis->>Redis: Store confirmed request attribution
+        Redis->>Redis: SET chatchat:message:<message_id>
+        Redis->>Redis: SADD chatchat:sending:<receiver_id> message_id
+        Redis->>Redis: ZADD chatchat:sending_deadlines now + 20 seconds
         Redis->>Redis: DEL pending entry
-        Redis-->>BE: accepted
-        BE-->>C1: message_accepted_ack_confirmed(message_id)
-    else ACK was already confirmed
+        Redis->>Redis: PUBLISH chatchat:delivery receiver_id
         Redis-->>BE: accepted
         BE-->>C1: message_accepted_ack_confirmed(message_id)
     else Pending entry expired or does not match
@@ -39,11 +37,12 @@ sequenceDiagram
 The confirmation script creates these entries atomically:
 
 ```text
-sending:<receiver_id>:<message_id> -> sender_id, receiver_id, message
-sending_deadlines                  -> score: expires_at_ms, member: sending key
+chatchat:message:<message_id>          -> complete admitted message
+chatchat:sending:<receiver_id>         -> set of message_ids
+chatchat:sending_deadlines             -> score: expires_at_ms, member: message_id
 ```
 
-The pending entry remains keyed by `sender_id + request_id` because it identifies the sender's admission request. A confirmed-request attribution is retained long enough to make repeated acknowledgements idempotent.
+The pending entry remains keyed by `sender_id + request_id` because it identifies the sender's admission request. It is deleted when the message enters the sending state. Repeating the sender acknowledgement after that returns `unknown_message`.
 
 The script is loaded at startup and called with `EVALSHA`. On `NOSCRIPT`, the backend loads it again and retries once.
 
@@ -55,27 +54,27 @@ sequenceDiagram
     participant DW as Delivery worker
     participant C2 as Receiver
 
-    Redis-->>DW: Newly confirmed message
+    Redis-->>DW: chatchat:delivery(receiver_id)
 
     alt Receiver is online
         DW->>C2: message(message_id, sender_id, payload)
         C2-->>DW: message_delivered_ack(message_id)
-        DW->>Redis: Atomically DEL message and ZREM deadline
-        DW-->>C2: message_delivered_ack_confirmed(message_id)
+        DW->>Redis: Atomically delete message, receiver membership, and deadline
     else Receiver is offline
         DW->>Redis: Leave message until reconnect or deadline
     end
 
-    opt Receiver connects during the delivery window
-        DW->>Redis: SCAN MATCH sending:<receiver_id>:*
-        Redis-->>DW: Receiver backlog
+    opt Receiver connects while the message remains in Redis
+        DW->>Redis: SMEMBERS chatchat:sending:<receiver_id>
+        Redis-->>DW: Receiver message IDs
+        DW->>Redis: Pipeline GET chatchat:message:<message_id>
         DW->>C2: Send each message
     end
 ```
 
-The delivery worker receives newly confirmed messages directly; it does not scan the whole Redis database. A receiver-specific `SCAN` is used only when that receiver connects, and the number of messages under that prefix is expected to be limited.
+The delivery worker subscribes to the Redis delivery channel. The same `wake(receiver_id)` path handles both Pub/Sub notifications and receiver authentication. It reads only that receiver's set and pipelines the corresponding message reads; it never scans the Redis keyspace.
 
-The `message_id` is included in every delivery and acknowledgement. An acknowledgement removes both the message key and its `sending_deadlines` member atomically.
+The `message_id` is included in every delivery and acknowledgement. A successful acknowledgement sends no response to the client. It atomically removes the message, its receiver-set membership, and its deadline.
 
 ## Persistence worker
 

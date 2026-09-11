@@ -9,8 +9,10 @@ defmodule ChatchatTcp.MessageAdmission do
   alias Ecto.UUID
 
   @redis ChatchatTcp.Redis
-  @sending_deadlines "chatchat:{admission}:sending_deadlines"
-  @sending_prefix "chatchat:sending:"
+  @sending_deadlines "chatchat:sending_deadlines"
+  @message_prefix "chatchat:message:"
+  @receiver_set_prefix "chatchat:sending:"
+  @delivery_channel "chatchat:delivery"
   @confirmation_script File.read!(
                          Application.app_dir(
                            :chatchat_tcp,
@@ -26,31 +28,21 @@ defmodule ChatchatTcp.MessageAdmission do
           {:ok, UUID.t()} | {:error, :unavailable}
   def prepare_message_sending(sender_id, request_id, recipient_id, message) do
     pending_key = request_key("pending", sender_id, request_id)
-    confirmed_key = request_key("confirmed", sender_id, request_id)
 
-    case Redix.command(@redis, ["GET", confirmed_key]) do
-      {:ok, nil} ->
-        message_id = UUID.generate()
+    message_id = UUID.generate()
 
-        admission =
-          Jason.encode!(%{
-            "message_id" => message_id,
-            "sender_id" => sender_id,
-            "request_id" => request_id,
-            "recipient_id" => recipient_id,
-            "message" => message
-          })
+    admission =
+      Jason.encode!(%{
+        "message_id" => message_id,
+        "sender_id" => sender_id,
+        "request_id" => request_id,
+        "recipient_id" => recipient_id,
+        "message" => message
+      })
 
-        case Redix.command(@redis, ["SET", pending_key, admission, "PX", config(:pending_ttl)]) do
-          {:ok, "OK"} -> {:ok, message_id}
-          _ -> {:error, :unavailable}
-        end
-
-      {:ok, message_id} ->
-        {:ok, message_id}
-
-      {:error, _reason} ->
-        {:error, :unavailable}
+    case Redix.command(@redis, ["SET", pending_key, admission, "PX", config(:pending_ttl)]) do
+      {:ok, "OK"} -> {:ok, message_id}
+      _ -> {:error, :unavailable}
     end
   end
 
@@ -61,9 +53,8 @@ defmodule ChatchatTcp.MessageAdmission do
           {:ok, UUID.t()} | {:error, :unknown_message | :unavailable}
   def confirm_message_id_attribution(sender_id, request_id, message_id) do
     pending_key = request_key("pending", sender_id, request_id)
-    confirmed_key = request_key("confirmed", sender_id, request_id)
 
-    confirm_message_id_attribution(@redis, pending_key, confirmed_key, message_id)
+    execute_confirmation(@redis, pending_key, message_id)
   end
 
   @impl GenServer
@@ -75,20 +66,20 @@ defmodule ChatchatTcp.MessageAdmission do
     end
   end
 
-  @spec confirm_message_id_attribution(Redix.connection(), String.t(), String.t(), UUID.t()) ::
+  @spec execute_confirmation(Redix.connection(), String.t(), UUID.t()) ::
           {:ok, UUID.t()} | {:error, :unknown_message | :unavailable}
-  defp confirm_message_id_attribution(conn, pending_key, confirmed_key, message_id) do
+  defp execute_confirmation(conn, pending_key, message_id) do
     command = [
       "EVALSHA",
       @confirmation_script_sha,
-      3,
+      2,
       pending_key,
-      confirmed_key,
       @sending_deadlines,
       message_id,
       System.system_time(:millisecond) + config(:delivery_window),
-      config(:pending_ttl),
-      @sending_prefix
+      @message_prefix,
+      @receiver_set_prefix,
+      @delivery_channel
     ]
 
     case Redix.command(conn, command) do

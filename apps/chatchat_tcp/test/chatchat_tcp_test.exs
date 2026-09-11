@@ -97,7 +97,7 @@ defmodule ChatchatTcpTest do
     :ok = :gen_tcp.close(socket)
   end
 
-  test "admits a message and confirms its acceptance without delivering it" do
+  test "admits and delivers a message to an online receiver" do
     sender = connect_and_authenticate(48)
     receiver = connect_and_authenticate(49)
 
@@ -111,8 +111,6 @@ defmodule ChatchatTcpTest do
               "message_id" => message_id
             }} = recv_json(sender)
 
-    assert {:error, :timeout} = :gen_tcp.recv(receiver, 0, 50)
-
     ack = %{type: "message_accepted_ack", request_id: "request-1", message_id: message_id}
     :ok = :gen_tcp.send(sender, Jason.encode!(ack) <> "\n")
 
@@ -122,7 +120,7 @@ defmodule ChatchatTcpTest do
     assert {:ok, encoded} =
              Redix.command(ChatchatTcp.Redis, [
                "GET",
-               "chatchat:sending:49:#{message_id}"
+               "chatchat:message:#{message_id}"
              ])
 
     assert %{
@@ -136,24 +134,35 @@ defmodule ChatchatTcpTest do
              Redix.command(ChatchatTcp.Redis, [
                "ZSCORE",
                "chatchat:sending_deadlines",
-               "chatchat:sending:49:#{message_id}"
+               message_id
              ])
 
     assert is_binary(score)
 
-    :ok = :gen_tcp.send(sender, Jason.encode!(ack) <> "\n")
-
-    assert {:ok, %{"type" => "message_accepted_ack_confirmed", "message_id" => ^message_id}} =
-             recv_json(sender)
-
-    :ok = :gen_tcp.send(sender, Jason.encode!(request) <> "\n")
-
     assert {:ok,
             %{
-              "type" => "message_admitted",
-              "request_id" => "request-1",
-              "message_id" => ^message_id
-            }} = recv_json(sender)
+              "type" => "message",
+              "message_id" => ^message_id,
+              "from_user_id" => 48,
+              "message" => "hello"
+            }} = recv_json(receiver)
+
+    :ok =
+      :gen_tcp.send(
+        receiver,
+        Jason.encode!(%{type: "message_delivered_ack", message_id: message_id}) <> "\n"
+      )
+
+    assert_eventually(fn ->
+      {:ok, [message, membership, deadline]} =
+        Redix.pipeline(ChatchatTcp.Redis, [
+          ["GET", "chatchat:message:#{message_id}"],
+          ["SISMEMBER", "chatchat:sending:49", message_id],
+          ["ZSCORE", "chatchat:sending_deadlines", message_id]
+        ])
+
+      is_nil(message) and membership == 0 and is_nil(deadline)
+    end)
 
     :ok = :gen_tcp.close(sender)
     :ok = :gen_tcp.close(receiver)
@@ -182,6 +191,41 @@ defmodule ChatchatTcpTest do
     refute changed_id in [message_id, replacement_id]
 
     :ok = :gen_tcp.close(sender)
+  end
+
+  test "delivers a queued message when the receiver connects" do
+    sender = connect_and_authenticate(55)
+    request = %{type: "send_message", request_id: "request-4", user_id: 56, message: "later"}
+    :ok = :gen_tcp.send(sender, Jason.encode!(request) <> "\n")
+
+    assert {:ok, %{"type" => "message_admitted", "message_id" => message_id}} =
+             recv_json(sender)
+
+    :ok =
+      :gen_tcp.send(
+        sender,
+        Jason.encode!(%{
+          type: "message_accepted_ack",
+          request_id: "request-4",
+          message_id: message_id
+        }) <> "\n"
+      )
+
+    assert {:ok, %{"type" => "message_accepted_ack_confirmed", "message_id" => ^message_id}} =
+             recv_json(sender)
+
+    receiver = connect_and_authenticate(56)
+
+    assert {:ok,
+            %{
+              "type" => "message",
+              "message_id" => ^message_id,
+              "from_user_id" => 55,
+              "message" => "later"
+            }} = recv_json(receiver)
+
+    :ok = :gen_tcp.close(sender)
+    :ok = :gen_tcp.close(receiver)
   end
 
   test "an expired pending message returns an error and can be resent with the same request id" do

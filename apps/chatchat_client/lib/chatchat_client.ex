@@ -43,6 +43,13 @@ defmodule ChatchatClient do
     GenServer.call(from, {:send_message, user_id, message})
   end
 
+  @spec send_message(from :: pid(), to :: integer(), message :: String.t()) ::
+          :ok | {:error, term()}
+  def send_message(from, to, message)
+      when is_pid(from) and is_integer(to) and is_binary(message) do
+    GenServer.call(from, {:send_message, to, message})
+  end
+
   def send_message(_, _, _), do: {:error, :invalid_params}
 
   @impl true
@@ -135,7 +142,7 @@ defmodule ChatchatClient do
   def handle_info(:poll, %{socket: socket} = state) when not is_nil(socket) do
     case :gen_tcp.recv(socket, 0, 0) do
       {:ok, line} ->
-        log_message(line)
+        handle_incoming(socket, line)
         poll()
         {:noreply, state}
 
@@ -244,8 +251,15 @@ defmodule ChatchatClient do
 
   defp receive_response(socket) do
     case receive_frame(socket) do
-      {:ok, %{"type" => "message", "from_user_id" => user_id, "message" => message}} ->
+      {:ok,
+       %{
+         "type" => "message",
+         "message_id" => message_id,
+         "from_user_id" => user_id,
+         "message" => message
+       }} ->
         Logger.info("Message from #{user_id}: #{message}")
+        send_frame(socket, %{type: "message_delivered_ack", message_id: message_id})
         receive_response(socket)
 
       response ->
@@ -253,10 +267,17 @@ defmodule ChatchatClient do
     end
   end
 
-  defp log_message(line) do
+  defp handle_incoming(socket, line) do
     case Jason.decode(String.trim_trailing(line, "\n")) do
-      {:ok, %{"type" => "message", "from_user_id" => user_id, "message" => message}} ->
+      {:ok,
+       %{
+         "type" => "message",
+         "message_id" => message_id,
+         "from_user_id" => user_id,
+         "message" => message
+       }} ->
         Logger.info("Message from #{user_id}: #{message}")
+        send_frame(socket, %{type: "message_delivered_ack", message_id: message_id})
 
       {:ok, response} ->
         Logger.warning("Unexpected response: #{inspect(response)}")

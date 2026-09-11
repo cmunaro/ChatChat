@@ -1,7 +1,7 @@
 defmodule ChatchatTcp.Handler do
   use ThousandIsland.Handler
 
-  alias ChatchatTcp.{MessageAdmission, Presence}
+  alias ChatchatTcp.{Delivery, MessageAdmission, Presence}
   alias ThousandIsland.Socket
 
   @impl ThousandIsland.Handler
@@ -62,6 +62,7 @@ defmodule ChatchatTcp.Handler do
          {:ok, user_id} <- ChatchatAuth.verify(token),
          {:ok, _} <- Presence.register(user_id) do
       send_json(socket, %{type: "authenticated", user_id: user_id})
+      Delivery.wake(user_id)
       {:continue, %{state | user_id: user_id}}
     else
       _ -> close_with_error(socket, state, "unauthorized")
@@ -99,8 +100,14 @@ defmodule ChatchatTcp.Handler do
   end
 
   @impl GenServer
-  def handle_info({:message, from_user_id, message}, {socket, state}) do
-    send_json(socket, %{type: "message", from_user_id: from_user_id, message: message})
+  def handle_info({:message, message_id, from_user_id, message}, {socket, state}) do
+    send_json(socket, %{
+      type: "message",
+      message_id: message_id,
+      from_user_id: from_user_id,
+      message: message
+    })
+
     {:noreply, {socket, state}}
   end
 
@@ -156,6 +163,27 @@ defmodule ChatchatTcp.Handler do
 
       {:error, :unavailable} ->
         send_json(socket, %{type: "error", error: "admission_unavailable"})
+    end
+
+    :ok
+  end
+
+  defp handle_request(
+         socket,
+         current_user_id,
+         "message_delivered_ack",
+         %{"message_id" => message_id}
+       )
+       when is_binary(message_id) and message_id != "" do
+    case Delivery.acknowledge(current_user_id, message_id) do
+      :ok ->
+        :ok
+
+      {:error, :unknown_message} ->
+        send_json(socket, %{type: "error", error: "unknown_message"})
+
+      {:error, :unavailable} ->
+        send_json(socket, %{type: "error", error: "delivery_unavailable"})
     end
 
     :ok

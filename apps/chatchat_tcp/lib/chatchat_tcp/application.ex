@@ -11,6 +11,8 @@ defmodule ChatchatTcp.Application do
       {Registry, keys: :duplicate, name: ChatchatTcp.Presence.Registry},
       {Redix, redis_options()},
       ChatchatTcp.MessageAdmission,
+      {Task.Supervisor, name: ChatchatTcp.Delivery.TaskSupervisor},
+      ChatchatTcp.Delivery,
       {ThousandIsland,
        Keyword.merge(tcp_options,
          handler_module: ChatchatTcp.Handler,
