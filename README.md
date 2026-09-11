@@ -6,9 +6,9 @@ Elixir distributed real-time chat exercise.
 
 - [x] Register and ogin
 - [x] Search users
-- [ ] 1to1 chats
+- [~] 1to1 chats
 - [ ] Group chats
-- [ ] Send text, images and files
+- [~] Send text, images and files
 - [ ] React to messages
 - [ ] Edit messages
 - [ ] Delete messages
@@ -20,7 +20,7 @@ Elixir distributed real-time chat exercise.
   - [ ] Entity management
   - [x] Api documentation
 - [ ] High-load client simulation
-- [ ] User discovery by username or invite
+- [x] User discovery by username
 - [ ] Conversation membership and authorization
 - [x] Online presence
 - [ ] Offline message delivery
@@ -36,7 +36,7 @@ Elixir distributed real-time chat exercise.
 - [~] Docker Compose development environment
 - [x] Ecto SQL storage and migrations
 - [ ] Phoenix HTTP API and LiveView admin
-- [ ] Thousand Island custom encrypted protocol
+- [~] Thousand Island custom encrypted protocol
   - [x] Connect and disconnect with authentication
   - [ ] Reconnect
   - [ ] Encryption
@@ -50,11 +50,11 @@ Elixir distributed real-time chat exercise.
   - [ ] Swagger UI in admin
 - [ ] Backpressure handling
 - [ ] Multi-node and high-load simulations
-- [ ] GitHub Actions
-  - [ ] Unit and integration tests
-  - [ ] Format and Credo checks
-  - [ ] Images published to GitHub image registry
-- [ ] Latest Elixir/Erlang versions pinned with mise
+- [~] GitHub Actions
+  - [x] Unit and integration tests
+  - [~] Format and Credo checks
+  - [~] Images published to GitHub image registry
+- [x] Latest Elixir/Erlang versions pinned with mise
 - [ ] Horizontal autoscaling experiment
 - [ ] Logs
   - [ ] Loki http traces
@@ -71,9 +71,11 @@ chatchat_broker (multi instance): Domain logic, authorization, Ecto persistence
 
 chatchat_auth (library): Shared token issuing and verification
 
-chatchat_simulator (multi instance): Load-test clients
+chatchat_client (multi instance): Load-test clients
 
 postgres db: Shared PostgreSQL database
+
+redis: Short lived data persistence
 
 ## Start up
 
@@ -90,3 +92,7 @@ mix phx.server
 /swaggerui
 /openapi
 ```
+
+## Message delivery architecture
+
+[Message delivery flow](MESSAGE_DELIVERY.md)
