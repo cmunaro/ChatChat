@@ -7,7 +7,6 @@ defmodule ChatchatClient do
   @tcp_host ~c"localhost"
   @tcp_port 4040
   @password "chatchat-client-password"
-  @poll_interval 250
   @ping_interval 30_000
   @reconnect_interval 1_000
   @timeout 10_000
@@ -23,7 +22,9 @@ defmodule ChatchatClient do
              user_id: user_id,
              token: token,
              socket: socket
-           }) do
+           }),
+         :ok <- :gen_tcp.controlling_process(socket, pid),
+         :ok <- GenServer.call(pid, :activate_socket) do
       pid
     else
       {:error, reason} -> raise "could not start client: #{inspect(reason)}"
@@ -54,7 +55,6 @@ defmodule ChatchatClient do
 
   @impl true
   def init(state) do
-    poll()
     ping()
     {:ok, state}
   end
@@ -65,6 +65,10 @@ defmodule ChatchatClient do
   end
 
   def handle_call(:user_id, _from, state), do: {:reply, state.user_id, state}
+
+  def handle_call(:activate_socket, _from, state) do
+    {:reply, :inet.setopts(state.socket, active: :once), state}
+  end
 
   def handle_call({:is_online, user_id}, _from, state) do
     case socket_request(state.socket, %{type: "is_online", user_id: user_id}) do
@@ -139,30 +143,25 @@ defmodule ChatchatClient do
     end
   end
 
-  def handle_info(:poll, %{socket: socket} = state) when not is_nil(socket) do
-    case :gen_tcp.recv(socket, 0, 0) do
-      {:ok, line} ->
-        handle_incoming(socket, line)
-        poll()
-        {:noreply, state}
+  def handle_info({:tcp, socket, line}, %{socket: socket} = state) do
+    handle_incoming(socket, line)
 
-      {:error, :timeout} ->
-        poll()
-        {:noreply, state}
-
-      {:error, _reason} ->
-        {:noreply, close_and_reconnect(state)}
+    case :inet.setopts(socket, active: :once) do
+      :ok -> {:noreply, state}
+      {:error, _reason} -> {:noreply, close_and_reconnect(state)}
     end
   end
 
-  def handle_info(:poll, state) do
-    poll()
-    {:noreply, state}
-  end
+  def handle_info({:tcp_closed, socket}, %{socket: socket} = state),
+    do: {:noreply, close_and_reconnect(state)}
+
+  def handle_info({:tcp_error, socket, _reason}, %{socket: socket} = state),
+    do: {:noreply, close_and_reconnect(state)}
 
   def handle_info(:reconnect, %{socket: nil} = state) do
     with {:ok, token} <- login(state.username),
-         {:ok, socket, _user_id} <- open_socket(token) do
+         {:ok, socket, _user_id} <- open_socket(token),
+         :ok <- :inet.setopts(socket, active: :once) do
       ping()
       {:noreply, %{state | token: token, socket: socket}}
     else
@@ -244,26 +243,39 @@ defmodule ChatchatClient do
 
   defp socket_request(socket, request) do
     with :ok <- send_frame(socket, request),
-         {:ok, response} <- receive_response(socket) do
+         {:ok, response} <- receive_active_response(socket) do
       {:ok, response}
     end
   end
 
-  defp receive_response(socket) do
-    case receive_frame(socket) do
-      {:ok,
-       %{
-         "type" => "message",
-         "message_id" => message_id,
-         "from_user_id" => user_id,
-         "message" => message
-       }} ->
-        Logger.info("Message from #{user_id}: #{message}")
-        send_frame(socket, %{type: "message_delivered_ack", message_id: message_id})
-        receive_response(socket)
+  defp receive_active_response(socket) do
+    receive do
+      {:tcp, ^socket, line} ->
+        :ok = :inet.setopts(socket, active: :once)
 
-      response ->
-        response
+        case Jason.decode(String.trim_trailing(line, "\n")) do
+          {:ok,
+           %{
+             "type" => "message",
+             "message_id" => message_id,
+             "from_user_id" => user_id,
+             "message" => message
+           }} ->
+            Logger.info("Message from #{user_id}: #{message}")
+            send_frame(socket, %{type: "message_delivered_ack", message_id: message_id})
+            receive_active_response(socket)
+
+          response ->
+            response
+        end
+
+      {:tcp_closed, ^socket} ->
+        {:error, :closed}
+
+      {:tcp_error, ^socket, reason} ->
+        {:error, reason}
+    after
+      @timeout -> {:error, :timeout}
     end
   end
 
@@ -319,6 +331,5 @@ defmodule ChatchatClient do
   end
 
   defp ping, do: Process.send_after(self(), :ping, @ping_interval)
-  defp poll, do: Process.send_after(self(), :poll, @poll_interval)
   defp reconnect, do: Process.send_after(self(), :reconnect, @reconnect_interval)
 end
