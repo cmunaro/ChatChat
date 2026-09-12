@@ -8,13 +8,12 @@ defmodule ChatchatTcp.Delivery do
   @channel "chatchat:delivery"
   @message_prefix "chatchat:message:"
   @receiver_set_prefix "chatchat:sending:"
-  @sending_deadlines "chatchat:sending_deadlines"
-  @acknowledgement_script File.read!(
-                            Application.app_dir(
-                              :chatchat_tcp,
-                              "priv/redis/acknowledge_message.lua"
-                            )
-                          )
+  @acknowledgement_script_path Application.app_dir(
+                                 :chatchat_tcp,
+                                 "priv/redis/acknowledge_message.lua"
+                               )
+  @external_resource @acknowledgement_script_path
+  @acknowledgement_script File.read!(@acknowledgement_script_path)
   @acknowledgement_script_sha Base.encode16(
                                 :crypto.hash(:sha, @acknowledgement_script),
                                 case: :lower
@@ -129,7 +128,14 @@ defmodule ChatchatTcp.Delivery do
   end
 
   defp acknowledge(conn, receiver_id, message_id) do
-    command = acknowledgement_command(receiver_id, message_id)
+    command = [
+      "EVALSHA",
+      @acknowledgement_script_sha,
+      2,
+      receiver_set(receiver_id),
+      message_key(message_id),
+      message_id
+    ]
 
     case Redix.command(conn, command) do
       {:ok, 1} -> :ok
@@ -137,18 +143,6 @@ defmodule ChatchatTcp.Delivery do
       {:error, %Redix.Error{message: "NOSCRIPT" <> _}} -> reload_and_acknowledge(conn, command)
       {:error, _reason} -> {:error, :unavailable}
     end
-  end
-
-  defp acknowledgement_command(receiver_id, message_id) do
-    [
-      "EVALSHA",
-      @acknowledgement_script_sha,
-      3,
-      receiver_set(receiver_id),
-      message_key(message_id),
-      @sending_deadlines,
-      message_id
-    ]
   end
 
   defp reload_and_acknowledge(conn, command) do

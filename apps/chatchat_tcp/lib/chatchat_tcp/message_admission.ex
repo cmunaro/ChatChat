@@ -10,15 +10,12 @@ defmodule ChatchatTcp.MessageAdmission do
 
   @redis ChatchatTcp.Redis
   @sending_deadlines "chatchat:sending_deadlines"
-  @message_prefix "chatchat:message:"
-  @receiver_set_prefix "chatchat:sending:"
-  @delivery_channel "chatchat:delivery"
-  @confirmation_script File.read!(
-                         Application.app_dir(
-                           :chatchat_tcp,
-                           "priv/redis/confirm_message_id_attribution.lua"
-                         )
-                       )
+  @confirmation_script_path Application.app_dir(
+                              :chatchat_tcp,
+                              "priv/redis/confirm_message_id_attribution.lua"
+                            )
+  @external_resource @confirmation_script_path
+  @confirmation_script File.read!(@confirmation_script_path)
   @confirmation_script_sha Base.encode16(
                              :crypto.hash(:sha, @confirmation_script),
                              case: :lower
@@ -76,10 +73,7 @@ defmodule ChatchatTcp.MessageAdmission do
       pending_key,
       @sending_deadlines,
       message_id,
-      System.system_time(:millisecond) + config(:delivery_window),
-      @message_prefix,
-      @receiver_set_prefix,
-      @delivery_channel
+      System.system_time(:millisecond) + config(:delivery_window)
     ]
 
     case Redix.command(conn, command) do
