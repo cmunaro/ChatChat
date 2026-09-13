@@ -51,12 +51,14 @@ The script is loaded at startup and called with `EVALSHA`. On `NOSCRIPT`, the ba
 ```mermaid
 sequenceDiagram
     participant Redis
+    participant DB as PostgreSQL
     participant DW as Delivery worker
     participant C2 as Receiver
 
     Redis-->>DW: chatchat:delivery(receiver_id)
 
     alt Receiver is online
+        DW->>Redis: Read the receiver message IDs and pipeline their payloads
         DW->>C2: message(message_id, sender_id, payload)
         C2-->>DW: message_delivered_ack(message_id)
         DW->>Redis: Atomically delete message, receiver membership, and deadline
@@ -70,11 +72,19 @@ sequenceDiagram
         DW->>Redis: Pipeline GET chatchat:message:<message_id>
         DW->>C2: Send each message
     end
+
+    opt Receiver has messages in PostgreSQL
+        DW->>DB: Query messages by receiver_id
+        DB-->>DW: Stored messages
+        DW->>C2: Send each message
+        C2-->>DW: message_delivered_ack(message_id)
+        DW->>DB: Delete acknowledged message for receiver_id
+    end
 ```
 
-The delivery worker subscribes to the Redis delivery channel. The same `wake(receiver_id)` path handles both Pub/Sub notifications and receiver authentication. It reads only that receiver's set and pipelines the corresponding message reads; it never scans the Redis keyspace.
+The delivery worker subscribes to the Redis delivery channel. The same `wake(receiver_id)` path handles both Pub/Sub notifications and receiver authentication. It reads only that receiver's Redis set and PostgreSQL rows; it never scans the Redis keyspace.
 
-The `message_id` is included in every delivery and acknowledgement. A successful acknowledgement sends no response to the client. It atomically removes the message, its receiver-set membership, and its deadline.
+A successful acknowledgement sends no response to the client. It removes the message from Redis or PostgreSQL, whichever currently owns it.
 
 ## Persistence worker
 
@@ -85,19 +95,21 @@ sequenceDiagram
     participant DB as PostgreSQL
 
     PW->>Redis: ZRANGEBYSCORE sending_deadlines -inf now LIMIT 0 batch_size
-    Redis-->>PW: Only expired message keys
+    Redis-->>PW: Expired message IDs
 
     loop Each bounded batch
         PW->>Redis: Atomically claim expired entries
+        Redis->>Redis: Move message:<id> to persisting:<id>
+        Redis->>Redis: Remove receiver membership and deadline
         Redis-->>PW: Claimed payloads
         PW->>DB: Repo.insert_all(messages, on_conflict: nothing)
 
         alt PostgreSQL commit succeeds
             DB-->>PW: committed
-            PW->>Redis: Delete claimed payloads and index entries
+            PW->>Redis: Delete every message-related key and index entry
         else PostgreSQL fails
             DB-->>PW: error
-            PW->>Redis: Release claims for retry
+            PW->>Redis: Retain claims for retry
         end
     end
 ```
@@ -107,13 +119,13 @@ The worker never runs `SCAN`. The sorted set is the expiration index, so finding
 Messages are handled in fixed-size batches:
 
 1. Read expired members from `sending_deadlines`.
-2. Atomically claim them so the delivery worker cannot start another delivery.
-3. Fetch their payloads with a Redis pipeline.
+2. Atomically move them out of the sending state.
+3. Move their payloads to recoverable `persisting:<message_id>` keys.
 4. Insert the batch with `Repo.insert_all/3`.
 5. Use `message_id` as a PostgreSQL unique key and `on_conflict: :nothing`.
-6. Remove Redis data only after PostgreSQL commits.
+6. Remove every Redis trace only after PostgreSQL commits.
 
-Claims must remain recoverable in Redis until the database commit. If the backend crashes, the persistence worker can reclaim stale claims. A recipient acknowledgement racing with persistence must be resolved idempotently against the claimed message.
+Claims remain in `chatchat:persisting` until the database commit. If the backend crashes, the persistence worker reads this set and retries. Once persistence removes the message from the receiver set, later wakeups cannot deliver it. A delivery that fetched the payload immediately before persistence claimed it may still race and send a duplicate; clients deduplicate using the stable `message_id`.
 
 When a query returns a full batch, the worker immediately requests another one. Otherwise, it reads the earliest deadline and schedules itself for that time instead of polling every second.
 

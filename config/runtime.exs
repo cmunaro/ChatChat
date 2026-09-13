@@ -3,7 +3,7 @@ import Config
 if config_env() == :prod do
   release_name = System.fetch_env!("RELEASE_NAME")
 
-  if release_name in ["chatchat_web", "chatchat_broker"] do
+  if release_name in ["chatchat_web", "chatchat_broker", "chatchat_tcp"] do
     database_url = System.get_env("DATABASE_URL") || raise "DATABASE_URL is required"
 
     config :chatchat_broker, ChatchatBroker.Repo,
@@ -27,7 +27,11 @@ if config_env() == :prod do
       redis_url: System.get_env("REDIS_URL", "redis://localhost:6379"),
       admission: [
         pending_ttl: String.to_integer(System.get_env("ADMISSION_TTL", "60000")),
-        delivery_window: String.to_integer(System.get_env("DELIVERY_WINDOW", "20000"))
+        delivery_window: String.to_integer(System.get_env("DELIVERY_WINDOW", "20000")),
+        persistence_batch_size:
+          String.to_integer(System.get_env("PERSISTENCE_BATCH_SIZE", "500")),
+        persistence_retry_interval:
+          String.to_integer(System.get_env("PERSISTENCE_RETRY_INTERVAL", "1000"))
       ],
       server: [
         transport_options: [ip: {0, 0, 0, 0}],

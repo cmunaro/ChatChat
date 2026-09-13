@@ -27,6 +27,7 @@ defmodule ChatchatTcp.MixProject do
   defp deps do
     [
       {:chatchat_auth, in_umbrella: true},
+      {:chatchat_broker, in_umbrella: true},
       {:ecto, "~> 3.14"},
       {:jason, "~> 1.4"},
       {:redix, "~> 1.8"},

@@ -1,6 +1,7 @@
 defmodule ChatchatTcp.Delivery do
   use GenServer
 
+  alias ChatchatBroker.Storage.MessagesStore
   alias ChatchatTcp.Presence
   alias Ecto.UUID
 
@@ -28,7 +29,10 @@ defmodule ChatchatTcp.Delivery do
   @spec acknowledge(pos_integer(), UUID.t()) :: :ok | {:error, :unknown_message | :unavailable}
   def acknowledge(receiver_id, message_id) do
     with {:ok, _message_id} <- UUID.cast(message_id) do
-      acknowledge(@redis, receiver_id, message_id)
+      case acknowledge(@redis, receiver_id, message_id) do
+        {:error, :unknown_message} -> MessagesStore.delete_for_receiver(receiver_id, message_id)
+        result -> result
+      end
     else
       :error -> {:error, :unknown_message}
     end
@@ -97,13 +101,21 @@ defmodule ChatchatTcp.Delivery do
 
   defp deliver_pending(receiver_id) do
     if Presence.online?(receiver_id) do
-      case Redix.command(@redis, ["SMEMBERS", receiver_set(receiver_id)]) do
-        {:ok, []} ->
-          :ok
+      deliver_from_redis(receiver_id)
+      deliver_from_postgres(receiver_id)
+    end
+  end
 
-        {:ok, message_ids} ->
-          with {:ok, messages} <-
-                 Redix.pipeline(@redis, Enum.map(message_ids, &["GET", message_key(&1)])) do
+  defp deliver_from_redis(receiver_id) do
+    case Redix.command(@redis, ["SMEMBERS", receiver_set(receiver_id)]) do
+      {:ok, []} ->
+        :ok
+
+      {:ok, message_ids} ->
+        commands = Enum.map(message_ids, &["GET", message_key(&1)])
+
+        case Redix.pipeline(@redis, commands) do
+          {:ok, messages} ->
             messages
             |> Enum.zip(message_ids)
             |> Enum.each(fn
@@ -113,12 +125,27 @@ defmodule ChatchatTcp.Delivery do
               _ ->
                 :ok
             end)
-          end
 
-        {:error, _reason} ->
-          :ok
-      end
+          {:error, _reason} ->
+            :ok
+        end
+
+      {:error, _reason} ->
+        :ok
     end
+  end
+
+  defp deliver_from_postgres(receiver_id) do
+    receiver_id
+    |> MessagesStore.for_receiver()
+    |> Enum.each(fn stored ->
+      Presence.deliver(
+        receiver_id,
+        stored.message_id,
+        stored.sender_id,
+        stored.payload
+      )
+    end)
   end
 
   defp deliver(receiver_id, message_id, encoded) do

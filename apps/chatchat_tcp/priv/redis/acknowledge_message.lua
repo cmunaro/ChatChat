@@ -1,4 +1,3 @@
--- check if message_id (argv[1]) in  chatchat:sending:<receiver_id>
 if redis.call('SISMEMBER', KEYS[1], ARGV[1]) == 0 then return 0 end
 
 -- check if message data exists chatchat:message:<message_id>

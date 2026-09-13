@@ -13,6 +13,7 @@ defmodule ChatchatTcp.Application do
       ChatchatTcp.MessageAdmission,
       {Task.Supervisor, name: ChatchatTcp.Delivery.TaskSupervisor},
       ChatchatTcp.Delivery,
+      ChatchatTcp.Persistence,
       {ThousandIsland,
        Keyword.merge(tcp_options,
          handler_module: ChatchatTcp.Handler,

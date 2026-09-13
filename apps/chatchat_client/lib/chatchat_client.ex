@@ -262,7 +262,9 @@ defmodule ChatchatClient do
              "message" => message
            }} ->
             Logger.info("Message from #{user_id}: #{message}")
+
             send_frame(socket, %{type: "message_delivered_ack", message_id: message_id})
+
             receive_active_response(socket)
 
           response ->
@@ -289,6 +291,7 @@ defmodule ChatchatClient do
          "message" => message
        }} ->
         Logger.info("Message from #{user_id}: #{message}")
+
         send_frame(socket, %{type: "message_delivered_ack", message_id: message_id})
 
       {:ok, response} ->

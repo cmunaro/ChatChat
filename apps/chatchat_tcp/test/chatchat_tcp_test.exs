@@ -2,6 +2,8 @@ defmodule ChatchatTcpTest do
   use ExUnit.Case, async: false
 
   alias ChatchatTcp.Presence
+  alias ChatchatBroker.Repo
+  alias ChatchatBroker.Storage.Schemas.{Message, User}
 
   setup do
     {:ok, "OK"} = Redix.command(ChatchatTcp.Redis, ["FLUSHDB"])
@@ -259,6 +261,144 @@ defmodule ChatchatTcpTest do
 
     :ok = :gen_tcp.close(sender)
     :ok = :gen_tcp.close(other_user)
+  end
+
+  test "persists an expired message and removes every related Redis entry" do
+    now = DateTime.utc_now()
+    suffix = System.unique_integer([:positive])
+
+    sender =
+      Repo.insert!(%User{
+        username: "persistence-sender-#{suffix}",
+        password_hash: "hash",
+        inserted_at: now
+      })
+
+    receiver =
+      Repo.insert!(%User{
+        username: "persistence-receiver-#{suffix}",
+        password_hash: "hash",
+        inserted_at: now
+      })
+
+    message_id = Ecto.UUID.generate()
+
+    encoded =
+      Jason.encode!(%{
+        message_id: message_id,
+        sender_id: sender.id,
+        recipient_id: receiver.id,
+        message: "store me"
+      })
+
+    assert {:ok, _results} =
+             Redix.pipeline(ChatchatTcp.Redis, [
+               ["SET", "chatchat:message:#{message_id}", encoded],
+               ["SADD", "chatchat:sending:#{receiver.id}", message_id],
+               ["ZADD", "chatchat:sending_deadlines", 0, message_id]
+             ])
+
+    send(ChatchatTcp.Persistence, :persist)
+
+    assert_eventually(fn -> Repo.get(Message, message_id) != nil end)
+
+    assert %Message{
+             sender_id: sender_id,
+             receiver_id: receiver_id,
+             payload: "store me"
+           } = Repo.get!(Message, message_id)
+
+    assert sender_id == sender.id
+    assert receiver_id == receiver.id
+
+    assert {:ok, [message, membership, deadline, persisting, claim]} =
+             Redix.pipeline(ChatchatTcp.Redis, [
+               ["GET", "chatchat:message:#{message_id}"],
+               ["SISMEMBER", "chatchat:sending:#{receiver.id}", message_id],
+               ["ZSCORE", "chatchat:sending_deadlines", message_id],
+               ["GET", "chatchat:persisting:#{message_id}"],
+               ["SISMEMBER", "chatchat:persisting", message_id]
+             ])
+
+    assert is_nil(message)
+    assert membership == 0
+    assert is_nil(deadline)
+    assert is_nil(persisting)
+    assert claim == 0
+
+    Repo.delete_all(Message)
+    Repo.delete!(sender)
+    Repo.delete!(receiver)
+  end
+
+  test "delivers and acknowledges messages from Redis and PostgreSQL when receiver connects" do
+    now = DateTime.utc_now()
+    suffix = System.unique_integer([:positive])
+
+    sender =
+      Repo.insert!(%User{
+        username: "delivery-sender-#{suffix}",
+        password_hash: "hash",
+        inserted_at: now
+      })
+
+    receiver =
+      Repo.insert!(%User{
+        username: "delivery-receiver-#{suffix}",
+        password_hash: "hash",
+        inserted_at: now
+      })
+
+    redis_message_id = Ecto.UUID.generate()
+    stored_message_id = Ecto.UUID.generate()
+
+    redis_message =
+      Jason.encode!(%{
+        message_id: redis_message_id,
+        sender_id: sender.id,
+        recipient_id: receiver.id,
+        message: "from redis"
+      })
+
+    assert {:ok, _results} =
+             Redix.pipeline(ChatchatTcp.Redis, [
+               ["SET", "chatchat:message:#{redis_message_id}", redis_message],
+               ["SADD", "chatchat:sending:#{receiver.id}", redis_message_id],
+               ["ZADD", "chatchat:sending_deadlines", 9_999_999_999_999, redis_message_id]
+             ])
+
+    Repo.insert!(%Message{
+      message_id: stored_message_id,
+      sender_id: sender.id,
+      receiver_id: receiver.id,
+      payload: "from postgres",
+      inserted_at: now
+    })
+
+    socket = connect_and_authenticate(receiver.id)
+
+    assert {:ok, %{"type" => "message", "message_id" => first_id}} = recv_json(socket)
+    assert {:ok, %{"type" => "message", "message_id" => second_id}} = recv_json(socket)
+    assert MapSet.new([first_id, second_id]) == MapSet.new([redis_message_id, stored_message_id])
+
+    for message_id <- [redis_message_id, stored_message_id] do
+      :ok =
+        :gen_tcp.send(
+          socket,
+          Jason.encode!(%{type: "message_delivered_ack", message_id: message_id}) <> "\n"
+        )
+    end
+
+    assert_eventually(fn ->
+      {:ok, redis_message} =
+        Redix.command(ChatchatTcp.Redis, ["GET", "chatchat:message:#{redis_message_id}"])
+
+      is_nil(redis_message) and is_nil(Repo.get(Message, stored_message_id))
+    end)
+
+    :ok = :gen_tcp.close(socket)
+    Repo.delete!(sender)
+    Repo.delete!(receiver)
   end
 
   defp connect do
