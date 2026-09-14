@@ -400,7 +400,7 @@ defmodule ChatchatTcpTest do
 
   defp connect do
     {:ok, socket} =
-      :gen_tcp.connect(~c"localhost", ChatchatTcp.port(), [:binary, active: false, packet: :raw])
+      :gen_tcp.connect(~c"localhost", ChatchatTcp.port(), [:binary, active: false, packet: :line])
 
     socket
   end

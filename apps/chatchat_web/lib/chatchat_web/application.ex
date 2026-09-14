@@ -9,6 +9,7 @@ defmodule ChatchatWeb.Application do
   def start(_type, _args) do
     children = [
       {Phoenix.PubSub, name: ChatchatWeb.PubSub},
+      ChatchatWeb.PromEx,
       ChatchatWeb.Endpoint
     ]
 

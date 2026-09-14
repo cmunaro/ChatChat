@@ -1,0 +1,55 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "panels": [
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "options": {
+                "0": {"color": "red", "text": "DOWN"},
+                "1": {"color": "green", "text": "UP"}
+              },
+              "type": "value"
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{"color": "red"}, {"color": "green", "value": 1}]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 6, "w": 6, "x": 0, "y": 0},
+      "id": 1,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "expr": "up{job=\"chatchat\"}",
+          "refId": "A"
+        }
+      ],
+      "title": "ChatChat metrics endpoint",
+      "type": "stat"
+    }
+  ],
+  "refresh": "5s",
+  "schemaVersion": 41,
+  "tags": ["chatchat"],
+  "templating": {"list": []},
+  "time": {"from": "now-15m", "to": "now"},
+  "timezone": "browser",
+  "title": "ChatChat Overview",
+  "uid": "chatchat-overview",
+  "version": 1
+}

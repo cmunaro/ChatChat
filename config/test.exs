@@ -27,4 +27,6 @@ config :chatchat_web, ChatchatWeb.Endpoint,
   secret_key_base: secret_key_base,
   server: false
 
+config :chatchat_web, ChatchatWeb.PromEx, disabled: true
+
 config :logger, level: :warning

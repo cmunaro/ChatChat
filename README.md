@@ -96,3 +96,9 @@ mix phx.server
 ## Message delivery architecture
 
 [Message delivery flow](MESSAGE_DELIVERY.md)
+
+## Metrics
+
+- Prometheus: http://localhost:9090
+- Grafana: http://localhost:3000 (`admin` / `admin`)
+- Application metrics: http://localhost:4000/metrics

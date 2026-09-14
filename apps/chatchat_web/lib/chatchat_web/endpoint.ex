@@ -3,6 +3,7 @@ defmodule ChatchatWeb.Endpoint do
 
   plug(Plug.RequestId)
   plug(Plug.Telemetry, event_prefix: [:phoenix, :endpoint])
+  plug(PromEx.Plug, prom_ex_module: ChatchatWeb.PromEx)
 
   if code_reloading? do
     plug(Phoenix.CodeReloader)
