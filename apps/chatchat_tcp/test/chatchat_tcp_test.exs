@@ -116,14 +116,15 @@ defmodule ChatchatTcpTest do
     ack = %{type: "message_accepted_ack", request_id: "request-1", message_id: message_id}
     :ok = :gen_tcp.send(sender, Jason.encode!(ack) <> "\n")
 
-    assert {:ok, %{"type" => "message_accepted_ack_confirmed", "message_id" => ^message_id}} =
-             recv_json(sender)
+    assert_eventually(fn ->
+      match?(
+        {:ok, encoded} when is_binary(encoded),
+        Redix.command(ChatchatTcp.Redis, ["GET", "chatchat:message:#{message_id}"])
+      )
+    end)
 
     assert {:ok, encoded} =
-             Redix.command(ChatchatTcp.Redis, [
-               "GET",
-               "chatchat:message:#{message_id}"
-             ])
+             Redix.command(ChatchatTcp.Redis, ["GET", "chatchat:message:#{message_id}"])
 
     assert %{
              "message_id" => ^message_id,
@@ -212,9 +213,6 @@ defmodule ChatchatTcpTest do
           message_id: message_id
         }) <> "\n"
       )
-
-    assert {:ok, %{"type" => "message_accepted_ack_confirmed", "message_id" => ^message_id}} =
-             recv_json(sender)
 
     receiver = connect_and_authenticate(56)
 
@@ -377,9 +375,8 @@ defmodule ChatchatTcpTest do
 
     socket = connect_and_authenticate(receiver.id)
 
-    assert {:ok, %{"type" => "message", "message_id" => first_id}} = recv_json(socket)
-    assert {:ok, %{"type" => "message", "message_id" => second_id}} = recv_json(socket)
-    assert MapSet.new([first_id, second_id]) == MapSet.new([redis_message_id, stored_message_id])
+    assert {:ok, %{"type" => "message", "message_id" => ^stored_message_id}} = recv_json(socket)
+    assert {:ok, %{"type" => "message", "message_id" => ^redis_message_id}} = recv_json(socket)
 
     for message_id <- [redis_message_id, stored_message_id] do
       :ok =

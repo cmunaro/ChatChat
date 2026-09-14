@@ -27,7 +27,6 @@ sequenceDiagram
         Redis->>Redis: DEL pending entry
         Redis->>Redis: PUBLISH chatchat:delivery receiver_id
         Redis-->>BE: accepted
-        BE-->>C1: message_accepted_ack_confirmed(message_id)
     else Pending entry expired or does not match
         Redis-->>BE: unknown
         BE-->>C1: error(unknown_message)

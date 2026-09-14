@@ -1,4 +1,4 @@
-if redis.call('SISMEMBER', KEYS[1], ARGV[1]) == 0 then return 0 end
+if redis.call('SISMEMBER', KEYS[1], ARGV[1]) == 0 then return 0 end -- if message_id in sendings for the user
 
 -- check if message data exists chatchat:message:<message_id>
 if redis.call('EXISTS', KEYS[2]) == 0 then return 0 end

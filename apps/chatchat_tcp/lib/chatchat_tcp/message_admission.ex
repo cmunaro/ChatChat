@@ -6,10 +6,11 @@ defmodule ChatchatTcp.MessageAdmission do
   One pending key per sender + request_id, one TTL, last one wins.
   """
   use GenServer
+
+  alias ChatchatTcp.{RedisKeys, RedisScript}
   alias Ecto.UUID
 
   @redis ChatchatTcp.Redis
-  @sending_deadlines "chatchat:sending_deadlines"
   @confirmation_script_path Application.app_dir(
                               :chatchat_tcp,
                               "priv/redis/confirm_message_id_attribution.lua"
@@ -21,11 +22,18 @@ defmodule ChatchatTcp.MessageAdmission do
                              case: :lower
                            )
 
+  @impl GenServer
+  @spec init(nil) :: {:ok, nil} | {:stop, term()}
+  def init(nil) do
+    case RedisScript.load(@redis, @confirmation_script, @confirmation_script_sha) do
+      :ok -> {:ok, nil}
+      {:error, reason} -> {:stop, reason}
+    end
+  end
+
   @spec prepare_message_sending(pos_integer(), String.t(), pos_integer(), String.t()) ::
           {:ok, UUID.t()} | {:error, :unavailable}
   def prepare_message_sending(sender_id, request_id, recipient_id, message) do
-    pending_key = request_key("pending", sender_id, request_id)
-
     message_id = UUID.generate()
 
     admission =
@@ -37,7 +45,15 @@ defmodule ChatchatTcp.MessageAdmission do
         "message" => message
       })
 
-    case Redix.command(@redis, ["SET", pending_key, admission, "PX", config(:pending_ttl)]) do
+    command = [
+      "SET",
+      RedisKeys.pending(sender_id, request_id),
+      admission,
+      "PX",
+      config(:pending_ttl)
+    ]
+
+    case Redix.command(@redis, command) do
       {:ok, "OK"} -> {:ok, message_id}
       _ -> {:error, :unavailable}
     end
@@ -49,18 +65,7 @@ defmodule ChatchatTcp.MessageAdmission do
   @spec confirm_message_id_attribution(pos_integer(), String.t(), UUID.t()) ::
           {:ok, UUID.t()} | {:error, :unknown_message | :unavailable}
   def confirm_message_id_attribution(sender_id, request_id, message_id) do
-    pending_key = request_key("pending", sender_id, request_id)
-
-    execute_confirmation(@redis, pending_key, message_id)
-  end
-
-  @impl GenServer
-  @spec init(nil) :: {:ok, nil} | {:stop, term()}
-  def init(nil) do
-    case load_confirmation_script(@redis) do
-      :ok -> {:ok, nil}
-      {:error, reason} -> {:stop, reason}
-    end
+    execute_confirmation(@redis, RedisKeys.pending(sender_id, request_id), message_id)
   end
 
   @spec execute_confirmation(Redix.connection(), String.t(), UUID.t()) ::
@@ -69,52 +74,22 @@ defmodule ChatchatTcp.MessageAdmission do
     command = [
       "EVALSHA",
       @confirmation_script_sha,
-      2,
+      1,
       pending_key,
-      @sending_deadlines,
       message_id,
       System.system_time(:millisecond) + config(:delivery_window)
     ]
 
-    case Redix.command(conn, command) do
+    case RedisScript.command(conn, @confirmation_script, @confirmation_script_sha, command) do
       {:ok, 1} ->
         {:ok, message_id}
 
       {:ok, 0} ->
         {:error, :unknown_message}
 
-      {:error, %Redix.Error{message: "NOSCRIPT" <> _}} ->
-        reload_and_confirm(conn, command, message_id)
-
       {:error, _reason} ->
         {:error, :unavailable}
     end
-  end
-
-  @spec reload_and_confirm(Redix.connection(), Redix.command(), UUID.t()) ::
-          {:ok, UUID.t()} | {:error, :unknown_message | :unavailable}
-  defp reload_and_confirm(conn, command, message_id) do
-    with :ok <- load_confirmation_script(conn) do
-      case Redix.command(conn, command) do
-        {:ok, 1} -> {:ok, message_id}
-        {:ok, 0} -> {:error, :unknown_message}
-        {:error, _reason} -> {:error, :unavailable}
-      end
-    end
-  end
-
-  @spec load_confirmation_script(Redix.connection()) :: :ok | {:error, term()}
-  defp load_confirmation_script(conn) do
-    case Redix.command(conn, ["SCRIPT", "LOAD", @confirmation_script]) do
-      {:ok, @confirmation_script_sha} -> :ok
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  @spec request_key(String.t(), pos_integer(), String.t()) :: String.t()
-  defp request_key(table, sender_id, request_id) do
-    encoded_request_id = Base.url_encode64(request_id, padding: false)
-    "chatchat:{admission}:#{table}:#{sender_id}:#{encoded_request_id}"
   end
 
   @spec config(:pending_ttl | :delivery_window) :: pos_integer()

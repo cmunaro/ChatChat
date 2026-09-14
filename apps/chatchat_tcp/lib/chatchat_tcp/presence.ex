@@ -11,14 +11,10 @@ defmodule ChatchatTcp.Presence do
     Registry.lookup(PresenceRegistry, user_id) != []
   end
 
-  @spec deliver(integer(), String.t(), integer(), String.t()) :: boolean()
-  def deliver(user_id, message_id, from_user_id, message) when is_integer(user_id) do
-    connections = Registry.lookup(PresenceRegistry, user_id)
-
-    Enum.each(connections, fn {pid, _value} ->
-      send(pid, {:message, message_id, from_user_id, message})
-    end)
-
-    connections != []
+  @spec get_connections(integer()) :: [{pid(), any()}]
+  def get_connections(user_id) when is_integer(user_id) do
+    Registry.lookup(PresenceRegistry, user_id)
   end
+
+  def get_connections(_), do: []
 end

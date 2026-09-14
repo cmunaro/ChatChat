@@ -1,7 +1,7 @@
 defmodule ChatchatTcp.Handler do
   use ThousandIsland.Handler
 
-  alias ChatchatTcp.{Delivery, MessageAdmission, Presence}
+  alias ChatchatTcp.{Delivery, Presence, RequestHandler}
   alias ThousandIsland.Socket
 
   @impl ThousandIsland.Handler
@@ -71,7 +71,7 @@ defmodule ChatchatTcp.Handler do
 
   defp process_frame(frame, socket, %{user_id: user_id} = state) do
     with {:ok, %{"type" => type} = request} <- Jason.decode(frame),
-         :ok <- handle_request(socket, user_id, type, request) do
+         :ok <- handle_request(socket, RequestHandler.handle(user_id, type, request)) do
       continue(state)
     else
       {:error, reason} when is_binary(reason) -> close_with_error(socket, state, reason)
@@ -99,6 +99,15 @@ defmodule ChatchatTcp.Handler do
     Socket.send(socket, Jason.encode!(payload) <> "\n")
   end
 
+  defp handle_request(_socket, :ok), do: :ok
+
+  defp handle_request(socket, {:reply, response}) do
+    send_json(socket, response)
+    :ok
+  end
+
+  defp handle_request(_socket, {:error, reason}), do: {:error, reason}
+
   @impl GenServer
   def handle_info({:message, message_id, from_user_id, message}, {socket, state}) do
     send_json(socket, %{
@@ -110,84 +119,4 @@ defmodule ChatchatTcp.Handler do
 
     {:noreply, {socket, state}}
   end
-
-  defp handle_request(socket, _current_user_id, "is_online", request) do
-    user_id = Map.get(request, "user_id")
-    is_online = Presence.online?(user_id)
-    send_json(socket, %{is_online: is_online})
-    :ok
-  end
-
-  defp handle_request(socket, _current_user_id, "ping", _request) do
-    send_json(socket, %{type: "pong"})
-    :ok
-  end
-
-  defp handle_request(
-         socket,
-         current_user_id,
-         "send_message",
-         %{"request_id" => request_id, "user_id" => user_id, "message" => message}
-       )
-       when is_binary(request_id) and request_id != "" and byte_size(request_id) <= 128 and
-              is_integer(user_id) and is_binary(message) do
-    case MessageAdmission.prepare_message_sending(current_user_id, request_id, user_id, message) do
-      {:ok, message_id} ->
-        send_json(socket, %{
-          type: "message_admitted",
-          request_id: request_id,
-          message_id: message_id
-        })
-
-      {:error, :unavailable} ->
-        send_json(socket, %{type: "error", error: "admission_unavailable"})
-    end
-
-    :ok
-  end
-
-  defp handle_request(
-         socket,
-         current_user_id,
-         "message_accepted_ack",
-         %{"request_id" => request_id, "message_id" => message_id}
-       )
-       when is_binary(request_id) and request_id != "" and is_binary(message_id) and
-              message_id != "" do
-    case MessageAdmission.confirm_message_id_attribution(current_user_id, request_id, message_id) do
-      {:ok, ^message_id} ->
-        send_json(socket, %{type: "message_accepted_ack_confirmed", message_id: message_id})
-
-      {:error, :unknown_message} ->
-        send_json(socket, %{type: "error", error: "unknown_message"})
-
-      {:error, :unavailable} ->
-        send_json(socket, %{type: "error", error: "admission_unavailable"})
-    end
-
-    :ok
-  end
-
-  defp handle_request(
-         socket,
-         current_user_id,
-         "message_delivered_ack",
-         %{"message_id" => message_id}
-       )
-       when is_binary(message_id) and message_id != "" do
-    case Delivery.acknowledge(current_user_id, message_id) do
-      :ok ->
-        :ok
-
-      {:error, :unknown_message} ->
-        send_json(socket, %{type: "error", error: "unknown_message"})
-
-      {:error, :unavailable} ->
-        send_json(socket, %{type: "error", error: "delivery_unavailable"})
-    end
-
-    :ok
-  end
-
-  defp handle_request(_, _, _, _), do: {:error, "not handled"}
 end
