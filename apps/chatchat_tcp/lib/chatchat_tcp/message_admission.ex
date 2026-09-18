@@ -54,8 +54,12 @@ defmodule ChatchatTcp.MessageAdmission do
     ]
 
     case Redix.command(@redis, command) do
-      {:ok, "OK"} -> {:ok, message_id}
-      _ -> {:error, :unavailable}
+      {:ok, "OK"} ->
+        :telemetry.execute([:chatchat, :message, :admitted], %{count: 1}, %{})
+        {:ok, message_id}
+
+      _ ->
+        {:error, :unavailable}
     end
   end
 

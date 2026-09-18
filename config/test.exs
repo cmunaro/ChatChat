@@ -28,5 +28,6 @@ config :chatchat_web, ChatchatWeb.Endpoint,
   server: false
 
 config :chatchat_web, ChatchatWeb.PromEx, disabled: true
+config :chatchat_tcp, ChatchatTcp.PromEx, disabled: true
 
 config :logger, level: :warning

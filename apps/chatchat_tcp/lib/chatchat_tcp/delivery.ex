@@ -33,6 +33,12 @@ defmodule ChatchatTcp.Delivery do
   @spec acknowledge(pos_integer(), UUID.t()) :: :ok | {:error, :unknown_message | :unavailable}
   defdelegate acknowledge(receiver_id, message_id), to: MessageDelivery
 
+  @spec metric_snapshot() :: %{
+          active_workers: non_neg_integer(),
+          pending_receivers: non_neg_integer()
+        }
+  def metric_snapshot, do: GenServer.call(__MODULE__, :metric_snapshot)
+
   @impl GenServer
   def init(nil) do
     with :ok <- MessageDelivery.load_script(),
@@ -49,6 +55,16 @@ defmodule ChatchatTcp.Delivery do
   @impl GenServer
   def handle_cast({:wake, receiver_id}, state) do
     {:noreply, schedule(receiver_id, state)}
+  end
+
+  @impl GenServer
+  def handle_call(:metric_snapshot, _from, state) do
+    snapshot = %{
+      active_workers: MapSet.size(state.active),
+      pending_receivers: MapSet.size(state.pending)
+    }
+
+    {:reply, snapshot, state}
   end
 
   @impl GenServer
@@ -88,8 +104,12 @@ defmodule ChatchatTcp.Delivery do
                send(owner, {:delivery_complete, receiver_id})
              end
            end) do
-        {:ok, _pid} -> %{state | active: MapSet.put(state.active, receiver_id)}
-        {:error, _reason} -> state
+        {:ok, _pid} ->
+          %{state | active: MapSet.put(state.active, receiver_id)}
+
+        {:error, _reason} ->
+          ChatchatTcp.Telemetry.delivery_failure(:unknown, :task_start_failed)
+          state
       end
     end
   end

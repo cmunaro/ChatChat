@@ -18,6 +18,7 @@ config :chatchat_auth,
 
 config :chatchat_tcp,
   redis_url: "redis://localhost:6379",
+  metrics_server: [ip: {0, 0, 0, 0}, port: 9568],
   admission: [
     pending_ttl: 60_000,
     delivery_window: 20_000,

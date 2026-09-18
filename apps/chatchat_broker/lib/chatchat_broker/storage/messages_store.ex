@@ -22,6 +22,9 @@ defmodule ChatchatBroker.Storage.MessagesStore do
     |> Repo.all()
   end
 
+  @spec count_undelivered() :: non_neg_integer()
+  def count_undelivered, do: Repo.aggregate(Message, :count, :message_id)
+
   @spec delete_for_receiver(pos_integer(), Ecto.UUID.t()) :: :ok | {:error, :unknown_message}
   def delete_for_receiver(receiver_id, message_id) do
     {deleted, _messages} =

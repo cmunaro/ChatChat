@@ -101,4 +101,5 @@ mix phx.server
 
 - Prometheus: http://localhost:9090
 - Grafana: http://localhost:3000 (`admin` / `admin`)
-- Application metrics: http://localhost:4000/metrics
+- Web application metrics: http://localhost:4000/metrics
+- TCP application metrics: http://localhost:9568/metrics

@@ -20,7 +20,9 @@ defmodule ChatchatTcp.Persistence do
 
   @impl GenServer
   def handle_info(:persist, state) do
+    started_at = System.monotonic_time()
     persisted = MessagePersistence.persist_batch()
+    ChatchatTcp.Telemetry.persistence_stop(started_at, persisted)
     Process.send_after(self(), :persist, MessagePersistence.next_run_in(persisted))
     {:noreply, state}
   end

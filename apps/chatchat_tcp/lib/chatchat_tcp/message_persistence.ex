@@ -36,8 +36,12 @@ defmodule ChatchatTcp.MessagePersistence do
     command = ["SSCAN", RedisKeys.persisting_set(), "0", "COUNT", config(:persistence_batch_size)]
 
     case Redix.command(@redis, command) do
-      {:ok, message_ids} when is_list(message_ids) -> persist(message_ids)
-      _ -> 0
+      {:ok, message_ids} when is_list(message_ids) ->
+        persist(message_ids)
+
+      _ ->
+        ChatchatTcp.Telemetry.persistence_failure(:redis_unavailable)
+        0
     end
   end
 
@@ -59,7 +63,9 @@ defmodule ChatchatTcp.MessagePersistence do
       |> claim(now)
       |> store()
     else
-      _error -> 0
+      _error ->
+        ChatchatTcp.Telemetry.persistence_failure(:redis_unavailable)
+        0
     end
   end
 
@@ -80,8 +86,12 @@ defmodule ChatchatTcp.MessagePersistence do
       end)
 
     case RedisScript.pipeline(@redis, @script, @script_sha, commands) do
-      {:ok, results} -> decode_claims(results, message_ids)
-      {:error, _reason} -> []
+      {:ok, results} ->
+        decode_claims(results, message_ids)
+
+      {:error, _reason} ->
+        ChatchatTcp.Telemetry.persistence_failure(:redis_unavailable)
+        []
     end
   end
 
@@ -91,8 +101,12 @@ defmodule ChatchatTcp.MessagePersistence do
     commands = Enum.map(message_ids, &["GET", RedisKeys.persisting(&1)])
 
     case Redix.pipeline(@redis, commands) do
-      {:ok, messages} -> messages |> decode_claims(message_ids) |> store()
-      {:error, _reason} -> 0
+      {:ok, messages} ->
+        messages |> decode_claims(message_ids) |> store()
+
+      {:error, _reason} ->
+        ChatchatTcp.Telemetry.persistence_failure(:redis_unavailable)
+        0
     end
   end
 
@@ -115,6 +129,7 @@ defmodule ChatchatTcp.MessagePersistence do
     rescue
       error ->
         Logger.error("Could not persist messages: #{Exception.message(error)}")
+        ChatchatTcp.Telemetry.persistence_failure(:postgres_unavailable)
         0
     end
   end
@@ -148,8 +163,12 @@ defmodule ChatchatTcp.MessagePersistence do
       end)
 
     case Redix.pipeline(@redis, commands) do
-      {:ok, _results} -> length(message_ids)
-      {:error, _reason} -> 0
+      {:ok, _results} ->
+        length(message_ids)
+
+      {:error, _reason} ->
+        ChatchatTcp.Telemetry.persistence_failure(:redis_unavailable)
+        0
     end
   end
 

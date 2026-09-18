@@ -6,6 +6,8 @@ defmodule ChatchatTcp.Handler do
 
   @impl ThousandIsland.Handler
   def handle_connection(_socket, options) do
+    :telemetry.execute([:chatchat, :tcp, :connection, :opened], %{count: 1}, %{})
+
     authentication_timeout = Keyword.fetch!(options, :authentication_timeout)
 
     state = %{
