@@ -2,8 +2,13 @@ global:
   scrape_interval: 5s
 
 scrape_configs:
-  - job_name: chatchat
+  - job_name: chatchat_web
     metrics_path: /metrics
     static_configs:
       - targets:
           - host.docker.internal:4000
+  - job_name: chatchat_tcp
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - host.docker.internal:9568

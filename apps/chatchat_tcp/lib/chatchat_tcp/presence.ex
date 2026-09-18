@@ -17,4 +17,7 @@ defmodule ChatchatTcp.Presence do
   end
 
   def get_connections(_), do: []
+
+  @spec connection_count() :: non_neg_integer()
+  def connection_count, do: Registry.count(PresenceRegistry)
 end

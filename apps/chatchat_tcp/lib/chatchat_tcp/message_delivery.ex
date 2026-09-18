@@ -31,11 +31,15 @@ defmodule ChatchatTcp.MessageDelivery do
   end
 
   defp deliver_from_postgres(receiver_id) do
-    receiver_id
-    |> MessagesStore.for_receiver()
-    |> Enum.each(fn message ->
-      deliver(receiver_id, message.message_id, message.sender_id, message.payload)
-    end)
+    try do
+      receiver_id
+      |> MessagesStore.for_receiver()
+      |> Enum.each(fn message ->
+        deliver(receiver_id, message.message_id, message.sender_id, message.payload, :postgres)
+      end)
+    rescue
+      _error -> ChatchatTcp.Telemetry.delivery_failure(:postgres, :postgres_unavailable)
+    end
   end
 
   defp deliver_from_redis(receiver_id) do
@@ -51,24 +55,31 @@ defmodule ChatchatTcp.MessageDelivery do
         _missing ->
           :ok
       end)
+    else
+      _error -> ChatchatTcp.Telemetry.delivery_failure(:redis, :redis_unavailable)
     end
   end
 
   defp deliver_redis_message(receiver_id, message_id, encoded) do
     with {:ok, %{"sender_id" => sender_id, "message" => message}} <- Jason.decode(encoded) do
-      deliver(receiver_id, message_id, sender_id, message)
+      deliver(receiver_id, message_id, sender_id, message, :redis)
+    else
+      _error -> ChatchatTcp.Telemetry.delivery_failure(:redis, :invalid_payload)
     end
   end
 
-  @spec deliver(integer(), String.t(), integer(), String.t()) :: boolean()
-  def deliver(user_id, message_id, from_user_id, message) when is_integer(user_id) do
+  @spec deliver(integer(), String.t(), integer(), String.t(), :postgres | :redis) :: boolean()
+  def deliver(user_id, message_id, from_user_id, message, source) when is_integer(user_id) do
+    started_at = System.monotonic_time()
     connections = Presence.get_connections(user_id)
 
     Enum.each(connections, fn {pid, _value} ->
       send(pid, {:message, message_id, from_user_id, message})
     end)
 
-    connections != []
+    delivered? = connections != []
+    ChatchatTcp.Telemetry.delivery_stop(started_at, source, delivered?)
+    delivered?
   end
 
   defp pipeline([]), do: {:ok, []}

@@ -3,44 +3,140 @@
   "editable": true,
   "panels": [
     {
+      "id": 1, "title": "Service health", "type": "stat",
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "fieldConfig": {
-        "defaults": {
-          "mappings": [
-            {
-              "options": {
-                "0": {"color": "red", "text": "DOWN"},
-                "1": {"color": "green", "text": "UP"}
-              },
-              "type": "value"
-            }
-          ],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [{"color": "red"}, {"color": "green", "value": 1}]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {"h": 6, "w": 6, "x": 0, "y": 0},
-      "id": 1,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "auto",
-        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
-        "textMode": "auto"
-      },
-      "targets": [
-        {
-          "datasource": {"type": "prometheus", "uid": "prometheus"},
-          "expr": "up{job=\"chatchat\"}",
-          "refId": "A"
-        }
-      ],
-      "title": "ChatChat metrics endpoint",
-      "type": "stat"
+      "gridPos": {"h": 5, "w": 6, "x": 0, "y": 0},
+      "fieldConfig": {"defaults": {"mappings": [{"type": "value", "options": {"0": {"text": "DOWN", "color": "red"}, "1": {"text": "UP", "color": "green"}}}], "thresholds": {"mode": "absolute", "steps": [{"color": "red"}, {"color": "green", "value": 1}]}}, "overrides": []},
+      "options": {"colorMode": "background", "graphMode": "none", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
+      "targets": [{"expr": "up{job=~\"chatchat_web|chatchat_tcp\"}", "legendFormat": "{{job}}", "refId": "A"}]
+    },
+    {
+      "id": 2, "title": "Connected TCP clients", "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 5, "w": 6, "x": 6, "y": 0},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green"}]}}, "overrides": []},
+      "options": {"colorMode": "value", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
+      "targets": [{"expr": "chatchat_tcp_connected_clients", "legendFormat": "Connected", "refId": "A"}]
+    },
+    {
+      "id": 3, "title": "Message backlogs", "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 5, "w": 6, "x": 12, "y": 0},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green"}, {"color": "orange", "value": 100}, {"color": "red", "value": 1000}]}}, "overrides": []},
+      "options": {"colorMode": "value", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
+      "targets": [{"expr": "chatchat_redis_pending_messages", "legendFormat": "Redis", "refId": "A"}, {"expr": "chatchat_postgres_undelivered_messages", "legendFormat": "PostgreSQL", "refId": "B"}]
+    },
+    {
+      "id": 4, "title": "Delivery workers", "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 5, "w": 6, "x": 18, "y": 0},
+      "fieldConfig": {"defaults": {}, "overrides": []},
+      "options": {"colorMode": "value", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
+      "targets": [{"expr": "chatchat_delivery_active_workers", "legendFormat": "Active", "refId": "A"}, {"expr": "chatchat_delivery_pending_receivers", "legendFormat": "Pending", "refId": "B"}]
+    },
+    {
+      "id": 5, "title": "Message throughput", "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 5},
+      "fieldConfig": {"defaults": {"unit": "ops", "min": 0}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom"}, "tooltip": {"mode": "multi"}},
+      "targets": [{"expr": "rate(chatchat_messages_admitted_total[$__rate_interval])", "legendFormat": "Admitted", "refId": "A"}, {"expr": "sum(rate(chatchat_messages_delivered_total[$__rate_interval]))", "legendFormat": "Delivered", "refId": "B"}, {"expr": "sum(rate(chatchat_message_delivery_failures_total[$__rate_interval]))", "legendFormat": "Failed", "refId": "C"}]
+    },
+    {
+      "id": 6, "title": "Deliveries by source", "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 5},
+      "fieldConfig": {"defaults": {"unit": "ops", "min": 0}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom"}, "tooltip": {"mode": "multi"}},
+      "targets": [{"expr": "sum by (source) (rate(chatchat_messages_delivered_total[$__rate_interval]))", "legendFormat": "{{source}}", "refId": "A"}]
+    },
+    {
+      "id": 7, "title": "Delivery latency percentiles", "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 13},
+      "fieldConfig": {"defaults": {"unit": "ms", "min": 0}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom"}, "tooltip": {"mode": "multi"}},
+      "targets": [{"expr": "histogram_quantile(0.50, sum by (le) (rate(chatchat_message_delivery_duration_milliseconds_bucket[$__rate_interval])))", "legendFormat": "p50", "refId": "A"}, {"expr": "histogram_quantile(0.95, sum by (le) (rate(chatchat_message_delivery_duration_milliseconds_bucket[$__rate_interval])))", "legendFormat": "p95", "refId": "B"}, {"expr": "histogram_quantile(0.99, sum by (le) (rate(chatchat_message_delivery_duration_milliseconds_bucket[$__rate_interval])))", "legendFormat": "p99", "refId": "C"}]
+    },
+    {
+      "id": 8, "title": "Persistence", "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 13},
+      "fieldConfig": {"defaults": {"min": 0}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom"}, "tooltip": {"mode": "multi"}},
+      "targets": [{"expr": "rate(chatchat_messages_persisted_total[$__rate_interval])", "legendFormat": "Persisted/s", "refId": "A"}, {"expr": "sum by (reason) (rate(chatchat_message_persistence_failures_total[$__rate_interval]))", "legendFormat": "Failures/s {{reason}}", "refId": "B"}, {"expr": "rate(chatchat_message_persistence_batch_size_sum[$__rate_interval]) / clamp_min(rate(chatchat_message_persistence_batch_size_count[$__rate_interval]), 0.000001)", "legendFormat": "Average batch size", "refId": "C"}, {"expr": "histogram_quantile(0.95, sum by (le) (rate(chatchat_message_persistence_duration_milliseconds_bucket[$__rate_interval])))", "legendFormat": "Duration p95 ms", "refId": "D"}]
+    },
+    {
+      "id": 9, "title": "BEAM runtime", "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 21},
+      "fieldConfig": {"defaults": {"min": 0}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom"}, "tooltip": {"mode": "multi"}},
+      "targets": [{"expr": "chatchat_tcp_prom_ex_beam_stats_process_count", "legendFormat": "TCP processes", "refId": "A"}, {"expr": "chatchat_web_prom_ex_beam_stats_process_count", "legendFormat": "Web processes", "refId": "B"}, {"expr": "sum(chatchat_tcp_prom_ex_beam_stats_run_queue_count)", "legendFormat": "TCP run queue", "refId": "C"}, {"expr": "rate(chatchat_tcp_prom_ex_beam_stats_reduction_count[$__rate_interval])", "legendFormat": "TCP reductions/s", "refId": "D"}, {"expr": "chatchat_tcp_prom_ex_beam_system_schedulers_online_info", "legendFormat": "Schedulers online", "refId": "E"}, {"expr": "sum(chatchat_tcp_prom_ex_beam_stats_active_task_count)", "legendFormat": "Active scheduler tasks", "refId": "F"}]
+    },
+    {
+      "id": 10, "title": "BEAM memory", "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 21},
+      "fieldConfig": {"defaults": {"unit": "bytes", "min": 0}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom"}, "tooltip": {"mode": "multi"}},
+      "targets": [{"expr": "chatchat_tcp_prom_ex_beam_memory_allocated_bytes", "legendFormat": "TCP", "refId": "A"}, {"expr": "chatchat_web_prom_ex_beam_memory_allocated_bytes", "legendFormat": "Web", "refId": "B"}]
+    },
+    {
+      "id": 11, "title": "PostgreSQL query rate and latency", "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 29},
+      "fieldConfig": {"defaults": {"min": 0}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom"}, "tooltip": {"mode": "multi"}},
+      "targets": [{"expr": "sum(rate(chatchat_broker_prom_ex_ecto_repo_query_total_time_milliseconds_count[$__rate_interval]))", "legendFormat": "Queries/s", "refId": "A"}, {"expr": "histogram_quantile(0.50, sum by (le) (rate(chatchat_broker_prom_ex_ecto_repo_query_total_time_milliseconds_bucket[$__rate_interval])))", "legendFormat": "Latency p50 ms", "refId": "B"}, {"expr": "histogram_quantile(0.95, sum by (le) (rate(chatchat_broker_prom_ex_ecto_repo_query_total_time_milliseconds_bucket[$__rate_interval])))", "legendFormat": "Latency p95 ms", "refId": "C"}, {"expr": "histogram_quantile(0.99, sum by (le) (rate(chatchat_broker_prom_ex_ecto_repo_query_total_time_milliseconds_bucket[$__rate_interval])))", "legendFormat": "Latency p99 ms", "refId": "D"}]
+    },
+    {
+      "id": 12, "title": "Phoenix HTTP", "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 29},
+      "fieldConfig": {"defaults": {"min": 0}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom"}, "tooltip": {"mode": "multi"}},
+      "targets": [{"expr": "sum by (status) (rate(chatchat_web_prom_ex_phoenix_http_requests_total{path!=\"Unknown\"}[$__rate_interval]))", "legendFormat": "HTTP {{status}} requests/s", "refId": "A"}, {"expr": "histogram_quantile(0.50, sum by (le, path) (rate(chatchat_web_prom_ex_phoenix_http_request_duration_milliseconds_bucket{path!=\"Unknown\"}[$__rate_interval])))", "legendFormat": "{{path}} p50", "refId": "B"}, {"expr": "histogram_quantile(0.95, sum by (le, path) (rate(chatchat_web_prom_ex_phoenix_http_request_duration_milliseconds_bucket{path!=\"Unknown\"}[$__rate_interval])))", "legendFormat": "{{path}} p95", "refId": "C"}, {"expr": "histogram_quantile(0.99, sum by (le, path) (rate(chatchat_web_prom_ex_phoenix_http_request_duration_milliseconds_bucket{path!=\"Unknown\"}[$__rate_interval])))", "legendFormat": "{{path}} p99", "refId": "D"}]
+    },
+    {
+      "id": 13, "title": "Persistence failures in selected range", "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 5, "w": 12, "x": 0, "y": 37},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green"}, {"color": "red", "value": 1}]}}, "overrides": []},
+      "options": {"colorMode": "background", "graphMode": "none", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
+      "targets": [{"expr": "sum(increase(chatchat_message_persistence_failures_total[$__range])) or vector(0)", "legendFormat": "Persistence failures", "refId": "A"}]
+    },
+    {
+      "id": 14, "title": "Delivery failures in selected range", "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 5, "w": 12, "x": 12, "y": 37},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green"}, {"color": "red", "value": 1}]}}, "overrides": []},
+      "options": {"colorMode": "background", "graphMode": "none", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
+      "targets": [{"expr": "sum(increase(chatchat_message_delivery_failures_total[$__range])) or vector(0)", "legendFormat": "Delivery failures", "refId": "A"}]
+    },
+    {
+      "id": 15, "title": "TCP connection rate", "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 7, "w": 8, "x": 0, "y": 42},
+      "fieldConfig": {"defaults": {"unit": "cps", "min": 0}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom"}, "tooltip": {"mode": "multi"}},
+      "targets": [{"expr": "rate(chatchat_tcp_connections_total[$__rate_interval]) or vector(0)", "legendFormat": "Connections/s", "refId": "A"}]
+    },
+    {
+      "id": 16, "title": "Core process mailbox pressure", "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 7, "w": 8, "x": 8, "y": 42},
+      "fieldConfig": {"defaults": {"unit": "short", "min": 0}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom"}, "tooltip": {"mode": "multi"}},
+      "targets": [{"expr": "chatchat_process_mailbox_messages", "legendFormat": "{{process}}", "refId": "A"}]
+    },
+    {
+      "id": 17, "title": "Delivery outcome rate", "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 7, "w": 8, "x": 16, "y": 42},
+      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom"}, "tooltip": {"mode": "multi"}},
+      "targets": [{"expr": "sum(rate(chatchat_messages_delivered_total[$__rate_interval])) / clamp_min(sum(rate(chatchat_messages_delivered_total[$__rate_interval])) + sum(rate(chatchat_message_delivery_failures_total[$__rate_interval])), 0.000001) or vector(0)", "legendFormat": "Success ratio", "refId": "A"}, {"expr": "sum(rate(chatchat_message_delivery_failures_total[$__rate_interval])) / clamp_min(sum(rate(chatchat_messages_delivered_total[$__rate_interval])) + sum(rate(chatchat_message_delivery_failures_total[$__rate_interval])), 0.000001) or vector(0)", "legendFormat": "Failure ratio", "refId": "B"}]
     }
   ],
   "refresh": "5s",
@@ -51,5 +147,5 @@
   "timezone": "browser",
   "title": "ChatChat Overview",
   "uid": "chatchat-overview",
-  "version": 1
+  "version": 4
 }
