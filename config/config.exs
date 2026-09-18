@@ -9,6 +9,8 @@
 # move said applications out of the umbrella.
 import Config
 
+config :logger, level: :error
+
 config :chatchat_broker,
   ecto_repos: [ChatchatBroker.Repo]
 

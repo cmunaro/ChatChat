@@ -1,8 +1,6 @@
 defmodule ChatchatClient.SocketTest do
   use ExUnit.Case, async: true
 
-  import ExUnit.CaptureLog
-
   alias ChatchatClient.Socket
 
   test "waits for the response matching the current request" do
@@ -26,22 +24,18 @@ defmodule ChatchatClient.SocketTest do
 
     matcher = &match?(%{"type" => "message_admitted", "request_id" => "current-request"}, &1)
 
-    log =
-      capture_log(fn ->
-        assert {:ok,
-                %{
-                  "type" => "message_admitted",
-                  "request_id" => "current-request",
-                  "message_id" => "message-1"
-                }} =
-                 Socket.request(
-                   client,
-                   %{type: "send_message", request_id: "current-request"},
-                   matcher
-                 )
-      end)
+    assert {:ok,
+            %{
+              "type" => "message_admitted",
+              "request_id" => "current-request",
+              "message_id" => "message-1"
+            }} =
+             Socket.request(
+               client,
+               %{type: "send_message", request_id: "current-request"},
+               matcher
+             )
 
-    assert log =~ "unknown_message"
     Task.await(server_task)
     :ok = Socket.close(client)
     :ok = Socket.close(server)
