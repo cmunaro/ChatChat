@@ -32,6 +32,14 @@ defmodule ChatchatTcp.PromEx.MessagePlugin do
           keep: fn metadata -> metadata.result == :ok end
         ),
         counter(
+          [:chatchat, :messages, :deferred, :total],
+          event_name: [:chatchat, :message, :delivery, :stop],
+          measurement: :count,
+          description: "Number of deliveries deferred because the receiver disconnected.",
+          tags: [:source],
+          keep: fn metadata -> metadata.result == :deferred end
+        ),
+        counter(
           [:chatchat, :message, :delivery, :failures, :total],
           event_name: [:chatchat, :message, :delivery, :stop],
           measurement: :count,

@@ -14,7 +14,7 @@ defmodule ChatchatTcp.Telemetry do
     :telemetry.execute(
       [:chatchat, :message, :delivery, :stop],
       %{count: 1, duration: System.monotonic_time() - started_at},
-      %{source: source, result: :error, reason: :no_connection}
+      %{source: source, result: :deferred, reason: :no_connection}
     )
   end
 

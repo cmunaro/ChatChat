@@ -26,6 +26,18 @@ defmodule ChatchatClient do
     end
   end
 
+  @spec simulate(map()) :: pid()
+  def simulate(options), do: ChatchatClient.Simulator.start(options)
+
+  @spec stop_simulation(pid()) :: :ok
+  def stop_simulation(simulation), do: GenServer.stop(simulation)
+
+  @spec simulation_status(pid()) :: map()
+  def simulation_status(simulation), do: GenServer.call(simulation, :status)
+
+  @spec disconnect(pid()) :: :ok
+  def disconnect(client), do: GenServer.cast(client, :disconnect)
+
   def search(client, name: name), do: GenServer.call(client, {:search, name})
 
   def is_online(client, user_id) when is_integer(user_id) do
@@ -50,8 +62,8 @@ defmodule ChatchatClient do
 
   @impl true
   def init(state) do
-    ping()
-    {:ok, state}
+    state = Map.merge(state, %{ping_timer: nil, reconnect_timer: nil})
+    {:ok, schedule_ping(state)}
   end
 
   @impl true
@@ -83,11 +95,17 @@ defmodule ChatchatClient do
   end
 
   @impl true
+  def handle_cast(:disconnect, %{socket: nil} = state), do: {:noreply, state}
+
+  def handle_cast(:disconnect, state), do: {:noreply, close_and_reconnect(state)}
+
+  @impl true
   def handle_info(:ping, state) do
+    state = %{state | ping_timer: nil}
+
     case Socket.request(state.socket, %{type: "ping"}) do
       {:ok, %{"type" => "pong"}} ->
-        ping()
-        {:noreply, state}
+        {:noreply, schedule_ping(state)}
 
       _ ->
         {:noreply, close_and_reconnect(state)}
@@ -109,29 +127,43 @@ defmodule ChatchatClient do
   def handle_info({:tcp_error, socket, _reason}, %{socket: socket} = state),
     do: {:noreply, close_and_reconnect(state)}
 
+  def handle_info({:tcp, _stale_socket, _line}, state), do: {:noreply, state}
+  def handle_info({:tcp_closed, _stale_socket}, state), do: {:noreply, state}
+  def handle_info({:tcp_error, _stale_socket, _reason}, state), do: {:noreply, state}
+
   def handle_info(:reconnect, %{socket: nil} = state) do
+    state = %{state | reconnect_timer: nil}
+
     with {:ok, token} <- Api.login(state.username),
          {:ok, socket, _user_id} <- Socket.connect(token),
          :ok <- Socket.activate(socket) do
-      ping()
-      {:noreply, %{state | token: token, socket: socket}}
+      state = %{state | token: token, socket: socket}
+      {:noreply, schedule_ping(state)}
     else
       _ ->
-        reconnect()
-        {:noreply, state}
+        {:noreply, schedule_reconnect(state)}
     end
   end
 
-  def handle_info(:reconnect, state), do: {:noreply, state}
+  def handle_info(:reconnect, state), do: {:noreply, %{state | reconnect_timer: nil}}
 
   @impl true
-  def terminate(_reason, %{socket: socket}), do: Socket.close(socket)
+  def terminate(_reason, %{socket: socket} = state) do
+    cancel_timer(state.ping_timer)
+    cancel_timer(state.reconnect_timer)
+    Socket.close(socket)
+  end
+
   def terminate(_reason, _state), do: :ok
 
   defp close_and_reconnect(state) do
+    cancel_timer(state.ping_timer)
+    cancel_timer(state.reconnect_timer)
     Socket.close(state.socket)
-    reconnect()
-    %{state | socket: nil}
+
+    state
+    |> Map.merge(%{socket: nil, ping_timer: nil, reconnect_timer: nil})
+    |> schedule_reconnect()
   end
 
   defp perform_send(socket, user_id, message) do
@@ -164,6 +196,18 @@ defmodule ChatchatClient do
     end
   end
 
-  defp ping, do: Process.send_after(self(), :ping, @ping_interval)
-  defp reconnect, do: Process.send_after(self(), :reconnect, @reconnect_interval)
+  defp schedule_ping(%{ping_timer: nil} = state) do
+    %{state | ping_timer: Process.send_after(self(), :ping, @ping_interval)}
+  end
+
+  defp schedule_ping(state), do: state
+
+  defp schedule_reconnect(%{reconnect_timer: nil} = state) do
+    %{state | reconnect_timer: Process.send_after(self(), :reconnect, @reconnect_interval)}
+  end
+
+  defp schedule_reconnect(state), do: state
+
+  defp cancel_timer(nil), do: :ok
+  defp cancel_timer(timer), do: Process.cancel_timer(timer)
 end
