@@ -56,9 +56,9 @@ Elixir distributed real-time chat exercise.
   - [~] Images published to GitHub image registry
 - [x] Latest Elixir/Erlang versions pinned with mise
 - [ ] Horizontal autoscaling experiment
-- [ ] Logs
+- [~] Logs
   - [ ] Loki http traces
-  - [ ] Grafana dashboards
+  - [x] Grafana dashboards
 - [ ] Node-local caching with ConCache
 
 ## Architecture goal so far
@@ -103,3 +103,43 @@ mix phx.server
 - Grafana: http://localhost:3000 (`admin` / `admin`)
 - Web application metrics: http://localhost:4000/metrics
 - TCP application metrics: http://localhost:9568/metrics
+
+## Client simulation
+
+Start the application with IEx:
+
+```sh
+iex -S mix phx.server
+```
+
+Start with a small simulation and increase the number of clients progressively:
+
+```elixir
+simulation =
+  ChatchatClient.simulate(%{
+    number_of_clients: 1000,
+    send_message_probability_per_second: 0.5,
+    disconnection_probability_per_second: 0.1
+  })
+```
+
+Every client independently evaluates once per second whether to send one message and whether to
+temporarily disconnect. Disconnected clients reconnect automatically.
+
+Inspect or stop the simulation:
+
+```elixir
+ChatchatClient.simulation_status(simulation)
+ChatchatClient.stop_simulation(simulation)
+```
+
+Optional settings:
+
+```elixir
+%{
+  creation_concurrency: 40,
+  ramp_interval_ms: 0,
+  duration_seconds: :infinity,
+  message_payload_size: 32
+}
+```

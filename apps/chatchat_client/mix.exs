@@ -18,6 +18,7 @@ defmodule ChatchatClient.MixProject do
   # Run "mix help compile.app" to learn about applications.
   def application do
     [
+      mod: {ChatchatClient.Application, []},
       extra_applications: [:inets, :logger, :ssl]
     ]
   end
