@@ -78,7 +78,9 @@ defmodule ChatchatClient do
   end
 
   def handle_call({:is_online, user_id}, _from, state) do
-    case Socket.request(state.socket, %{type: "is_online", user_id: user_id}) do
+    response_matcher = fn response -> is_boolean(response["is_online"]) end
+
+    case Socket.request(state.socket, %{type: "is_online", user_id: user_id}, response_matcher) do
       {:ok, %{"is_online" => online}} ->
         {:reply, {:ok, online}, state}
 
@@ -102,8 +104,9 @@ defmodule ChatchatClient do
   @impl true
   def handle_info(:ping, state) do
     state = %{state | ping_timer: nil}
+    response_matcher = &match?(%{"type" => "pong"}, &1)
 
-    case Socket.request(state.socket, %{type: "ping"}) do
+    case Socket.request(state.socket, %{type: "ping"}, response_matcher) do
       {:ok, %{"type" => "pong"}} ->
         {:noreply, schedule_ping(state)}
 
@@ -169,6 +172,12 @@ defmodule ChatchatClient do
   defp perform_send(socket, user_id, message) do
     request_id = Ecto.UUID.generate()
 
+    response_matcher = fn
+      %{"type" => "message_admitted", "request_id" => ^request_id} -> true
+      %{"type" => "error", "error" => "admission_unavailable"} -> true
+      _response -> false
+    end
+
     request = %{
       type: "send_message",
       request_id: request_id,
@@ -181,7 +190,7 @@ defmodule ChatchatClient do
             "type" => "message_admitted",
             "request_id" => ^request_id,
             "message_id" => message_id
-          }} <- Socket.request(socket, request),
+          }} <- Socket.request(socket, request, response_matcher),
          :ok <-
            Socket.send_frame(socket, %{
              type: "message_accepted_ack",
