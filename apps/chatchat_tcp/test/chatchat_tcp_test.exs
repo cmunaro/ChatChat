@@ -329,6 +329,67 @@ defmodule ChatchatTcpTest do
     Repo.delete!(receiver)
   end
 
+  test "recovers a message claimed for persistence before a restart" do
+    now = DateTime.utc_now()
+    suffix = System.unique_integer([:positive])
+
+    sender =
+      Repo.insert!(%User{
+        username: "recovery-sender-#{suffix}",
+        password_hash: "hash",
+        inserted_at: now
+      })
+
+    receiver =
+      Repo.insert!(%User{
+        username: "recovery-receiver-#{suffix}",
+        password_hash: "hash",
+        inserted_at: now
+      })
+
+    message_id = Ecto.UUID.generate()
+
+    encoded =
+      Jason.encode!(%{
+        message_id: message_id,
+        sender_id: sender.id,
+        recipient_id: receiver.id,
+        message: "recover me"
+      })
+
+    assert {:ok, _results} =
+             Redix.pipeline(ChatchatTcp.Redis, [
+               ["SET", "chatchat:persisting:#{message_id}", encoded],
+               ["SADD", "chatchat:persisting", message_id]
+             ])
+
+    send(ChatchatTcp.Persistence, :persist)
+
+    assert_eventually(fn -> Repo.get(Message, message_id) != nil end)
+
+    assert %Message{
+             sender_id: sender_id,
+             receiver_id: receiver_id,
+             payload: "recover me"
+           } = Repo.get!(Message, message_id)
+
+    assert sender_id == sender.id
+    assert receiver_id == receiver.id
+
+    assert {:ok, [persisting, claim]} =
+             Redix.pipeline(ChatchatTcp.Redis, [
+               ["GET", "chatchat:persisting:#{message_id}"],
+               ["SISMEMBER", "chatchat:persisting", message_id]
+             ])
+
+    assert is_nil(persisting)
+    assert claim == 0
+
+    Repo.delete_all(Message)
+    Repo.delete!(sender)
+    Repo.delete!(receiver)
+  end
+
   test "delivers and acknowledges messages from Redis and PostgreSQL when receiver connects" do
     now = DateTime.utc_now()
     suffix = System.unique_integer([:positive])
