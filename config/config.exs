@@ -16,6 +16,10 @@ config :chatchat_auth,
   token_salt: "user authentication",
   max_age: 15 * 60
 
+config :argon2_elixir,
+  t_cost: 1,
+  parallelism: 12
+
 config :chatchat_tcp,
   redis_url: "redis://localhost:6379",
   metrics_server: [ip: {0, 0, 0, 0}, port: 9568],

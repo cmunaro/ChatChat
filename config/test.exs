@@ -16,7 +16,7 @@ config :chatchat_tcp,
   server: [transport_options: [ip: {127, 0, 0, 1}], port: 0, read_timeout: 1_000],
   handler: [authentication_timeout: 100, max_frame_size: 1_024]
 
-config :argon2_elixir, t_cost: 1, m_cost: 8
+config :argon2_elixir, t_cost: 1, m_cost: 8, parallelism: 1
 
 config :chatchat_broker, ChatchatBroker.Repo,
   url: System.get_env("TEST_DATABASE_URL", "ecto://chatchat:chatchat@localhost/chatchat_test"),
