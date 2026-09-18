@@ -1,6 +1,9 @@
 import Config
 
 if config_env() == :prod do
+  config :argon2_elixir,
+    parallelism: 12
+
   release_name = System.fetch_env!("RELEASE_NAME")
 
   if release_name in ["chatchat_web", "chatchat_broker", "chatchat_tcp"] do
