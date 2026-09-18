@@ -16,12 +16,14 @@ defmodule ChatchatClient.Socket do
   @spec activate(port()) :: :ok | {:error, term()}
   def activate(socket), do: :inet.setopts(socket, active: :once)
 
-  @spec request(port() | nil, map()) :: {:ok, map()} | {:error, term()}
-  def request(nil, _request), do: {:error, :disconnected}
+  @type response_matcher :: (map() -> boolean())
 
-  def request(socket, request) do
+  @spec request(port() | nil, map(), response_matcher()) :: {:ok, map()} | {:error, term()}
+  def request(nil, _request, _response_matcher), do: {:error, :disconnected}
+
+  def request(socket, request, response_matcher) do
     with :ok <- send_frame(socket, request),
-         {:ok, response} <- receive_response(socket) do
+         {:ok, response} <- receive_response(socket, response_matcher, deadline()) do
       {:ok, response}
     end
   end
@@ -67,18 +69,22 @@ defmodule ChatchatClient.Socket do
     result
   end
 
-  defp receive_response(socket) do
+  defp receive_response(socket, response_matcher, deadline) do
     receive do
       {:tcp, ^socket, line} ->
         :ok = activate(socket)
 
         case decode(line) do
-          {:ok, %{"type" => "message"} = message} ->
-            acknowledge_message(socket, message)
-            receive_response(socket)
+          {:ok, response} ->
+            if response_matcher.(response) do
+              {:ok, response}
+            else
+              handle_decoded(socket, response)
+              receive_response(socket, response_matcher, deadline)
+            end
 
-          response ->
-            response
+          {:error, reason} ->
+            {:error, reason}
         end
 
       {:tcp_closed, ^socket} ->
@@ -87,9 +93,15 @@ defmodule ChatchatClient.Socket do
       {:tcp_error, ^socket, reason} ->
         {:error, reason}
     after
-      @timeout -> {:error, :timeout}
+      remaining(deadline) -> {:error, :timeout}
     end
   end
+
+  defp handle_decoded(socket, %{"type" => "message"} = message),
+    do: acknowledge_message(socket, message)
+
+  defp handle_decoded(_socket, response),
+    do: Logger.warning("Unexpected response: #{inspect(response)}")
 
   defp acknowledge_message(socket, message) do
     Logger.info("Message from #{message["from_user_id"]}: #{message["message"]}")
@@ -99,6 +111,9 @@ defmodule ChatchatClient.Socket do
   defp receive_frame(socket) do
     with {:ok, line} <- :gen_tcp.recv(socket, 0, @timeout), do: decode(line)
   end
+
+  defp deadline, do: System.monotonic_time(:millisecond) + @timeout
+  defp remaining(deadline), do: max(deadline - System.monotonic_time(:millisecond), 0)
 
   defp decode(line), do: Jason.decode(String.trim_trailing(line, "\n"))
 end
