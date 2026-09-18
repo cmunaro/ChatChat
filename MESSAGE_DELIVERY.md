@@ -49,39 +49,65 @@ The script is loaded at startup and called with `EVALSHA`. On `NOSCRIPT`, the ba
 
 ```mermaid
 sequenceDiagram
+    participant C2 as Receiver
     participant Redis
     participant DB as PostgreSQL
+    participant DC as Delivery coordinator
     participant DW as Delivery worker
-    participant C2 as Receiver
+    participant H as TCP handler
 
-    Redis-->>DW: chatchat:delivery(receiver_id)
-
-    alt Receiver is online
-        DW->>Redis: Read the receiver message IDs and pipeline their payloads
-        DW->>C2: message(message_id, sender_id, payload)
-        C2-->>DW: message_delivered_ack(message_id)
-        DW->>Redis: Atomically delete message, receiver membership, and deadline
-    else Receiver is offline
-        DW->>Redis: Leave message until reconnect or deadline
+    alt Redis publishes new work
+        Redis-->>DC: chatchat:delivery(receiver_id)
+    else Receiver authenticates
+        C2->>H: authenticate(token)
+        H->>DC: wake(receiver_id)
     end
 
-    opt Receiver connects while the message remains in Redis
+    alt Receiver already active
+        DC->>DC: Coalesce one additional pass into pending
+    else All worker slots occupied
+        DC->>DC: Coalesce receiver_id into pending set
+    else Worker capacity available
+        DC->>DW: Start receiver delivery task
+    end
+
+    opt Receiver was pending and a worker slot becomes available
+        DC->>DW: Start pending receiver delivery task
+    end
+
+    alt Receiver is offline when the task runs
+        DW-->>DC: delivery_complete(receiver_id)
+    else Receiver is online
+        DW->>DB: Query stored messages by receiver_id
+        DB-->>DW: Stored messages
         DW->>Redis: SMEMBERS chatchat:sending:<receiver_id>
         Redis-->>DW: Receiver message IDs
         DW->>Redis: Pipeline GET chatchat:message:<message_id>
-        DW->>C2: Send each message
+        loop Each PostgreSQL or Redis message
+            DW->>H: Enqueue message for receiver connection
+            H->>C2: message(message_id, sender_id, payload)
+        end
+        DW-->>DC: delivery_complete(receiver_id)
     end
 
-    opt Receiver has messages in PostgreSQL
-        DW->>DB: Query messages by receiver_id
-        DB-->>DW: Stored messages
-        DW->>C2: Send each message
-        C2-->>DW: message_delivered_ack(message_id)
-        DW->>DB: Delete acknowledged message for receiver_id
+    DC->>DC: Remove active receiver and drain pending work up to the limit
+
+    C2-->>H: message_delivered_ack(message_id)
+    H->>Redis: Atomically acknowledge Redis message
+    alt Redis owns the message
+        Redis-->>H: acknowledged
+    else Message is not in Redis
+        H->>DB: Delete acknowledged message for receiver_id
     end
 ```
 
-The delivery worker subscribes to the Redis delivery channel. The same `wake(receiver_id)` path handles both Pub/Sub notifications and receiver authentication. It reads only that receiver's Redis set and PostgreSQL rows; it never scans the Redis keyspace.
+`ChatchatTcp.Delivery` is the node-local delivery coordinator. It subscribes to the Redis delivery channel, and the same `wake(receiver_id)` scheduling path handles both Pub/Sub notifications and receiver authentication.
+
+The coordinator applies bounded concurrency before starting supervised delivery tasks. `active` contains receivers with a running task, while `pending` contains receivers waiting for a task or needing another pass after their current task finishes. Repeated wakeups for the same receiver are coalesced because both collections are sets. When a task completes, the coordinator removes its receiver from `active` and drains `pending` until the configured capacity is full again.
+
+This bounds concurrent PostgreSQL queries and Redis pipelines during a burst. It deliberately trades some queueing latency for stable downstream resource usage. The current scheduler state is exposed as `chatchat_delivery_active_workers` and `chatchat_delivery_pending_receivers`.
+
+Each delivery task reads only its receiver's Redis set and PostgreSQL rows; it never scans the Redis keyspace.
 
 A successful acknowledgement sends no response to the client. It removes the message from Redis or PostgreSQL, whichever currently owns it.
 

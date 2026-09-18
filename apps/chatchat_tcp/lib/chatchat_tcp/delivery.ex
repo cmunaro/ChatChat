@@ -10,13 +10,15 @@ defmodule ChatchatTcp.Delivery do
 
   The state contains:
   - `active`: Set of receiver IDs that currently have a delivery task running
-  - `pending`: Set of receiver IDs that need another delivery pass after their active task finishes
+  - `pending`: Set of receiver IDs waiting for a delivery pass
+  - `max_concurrency`: Maximum number of delivery tasks that may run at once
 
-  When a receiver needs to be handled and is not active, a task is started and
-  the receiver ID is added to `active`
+  When a receiver needs to be handled and capacity is available, a task is started
+  and the receiver ID is added to `active`.
 
-  If a task is already active for that receiver, the receiver ID is added to
-  `pending` if not already present
+  If all worker slots are occupied, or a task is already active for that receiver,
+  the receiver ID is coalesced into `pending`. Completing a task drains pending
+  receivers up to the configured concurrency limit.
   """
 
   alias ChatchatTcp.MessageDelivery
@@ -41,12 +43,23 @@ defmodule ChatchatTcp.Delivery do
 
   @impl GenServer
   def init(nil) do
+    max_concurrency =
+      :chatchat_tcp
+      |> Application.fetch_env!(:delivery)
+      |> Keyword.fetch!(:max_concurrency)
+
     with :ok <- MessageDelivery.load_script(),
          {:ok, pubsub} <-
            Redix.PubSub.start_link(Application.fetch_env!(:chatchat_tcp, :redis_url)),
          {:ok, subscription} <- Redix.PubSub.subscribe(pubsub, @channel, self()) do
       {:ok,
-       %{pubsub: pubsub, subscription: subscription, active: MapSet.new(), pending: MapSet.new()}}
+       %{
+         pubsub: pubsub,
+         subscription: subscription,
+         active: MapSet.new(),
+         pending: MapSet.new(),
+         max_concurrency: max_concurrency
+       }}
     else
       {:error, reason} -> {:stop, reason}
     end
@@ -80,37 +93,53 @@ defmodule ChatchatTcp.Delivery do
 
   def handle_info({:delivery_complete, receiver_id}, state) do
     state = %{state | active: MapSet.delete(state.active, receiver_id)}
-
-    if MapSet.member?(state.pending, receiver_id) do
-      schedule(receiver_id, %{state | pending: MapSet.delete(state.pending, receiver_id)})
-      |> then(&{:noreply, &1})
-    else
-      {:noreply, state}
-    end
+    {:noreply, drain_pending(state)}
   end
 
   def handle_info({:redix_pubsub, _, _, _, _}, state), do: {:noreply, state}
 
   defp schedule(receiver_id, state) do
-    if MapSet.member?(state.active, receiver_id) do
-      %{state | pending: MapSet.put(state.pending, receiver_id)}
+    cond do
+      MapSet.member?(state.active, receiver_id) ->
+        %{state | pending: MapSet.put(state.pending, receiver_id)}
+
+      MapSet.member?(state.pending, receiver_id) ->
+        state
+
+      MapSet.size(state.active) < state.max_concurrency ->
+        start_delivery(receiver_id, state)
+
+      true ->
+        %{state | pending: MapSet.put(state.pending, receiver_id)}
+    end
+  end
+
+  defp drain_pending(state) do
+    if MapSet.size(state.active) < state.max_concurrency and MapSet.size(state.pending) > 0 do
+      receiver_id = Enum.at(state.pending, 0)
+      state = %{state | pending: MapSet.delete(state.pending, receiver_id)}
+      receiver_id |> start_delivery(state) |> drain_pending()
     else
-      owner = self()
+      state
+    end
+  end
 
-      case Task.Supervisor.start_child(ChatchatTcp.Delivery.TaskSupervisor, fn ->
-             try do
-               MessageDelivery.deliver_pending(receiver_id)
-             after
-               send(owner, {:delivery_complete, receiver_id})
-             end
-           end) do
-        {:ok, _pid} ->
-          %{state | active: MapSet.put(state.active, receiver_id)}
+  defp start_delivery(receiver_id, state) do
+    owner = self()
 
-        {:error, _reason} ->
-          ChatchatTcp.Telemetry.delivery_failure(:unknown, :task_start_failed)
-          state
-      end
+    case Task.Supervisor.start_child(ChatchatTcp.Delivery.TaskSupervisor, fn ->
+           try do
+             MessageDelivery.deliver_pending(receiver_id)
+           after
+             send(owner, {:delivery_complete, receiver_id})
+           end
+         end) do
+      {:ok, _pid} ->
+        %{state | active: MapSet.put(state.active, receiver_id)}
+
+      {:error, _reason} ->
+        ChatchatTcp.Telemetry.delivery_failure(:unknown, :task_start_failed)
+        state
     end
   end
 end
