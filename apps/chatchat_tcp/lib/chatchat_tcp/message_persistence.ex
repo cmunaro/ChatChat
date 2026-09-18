@@ -33,15 +33,40 @@ defmodule ChatchatTcp.MessagePersistence do
   end
 
   defp persist_interrupted do
-    command = ["SSCAN", RedisKeys.persisting_set(), "0", "COUNT", config(:persistence_batch_size)]
+    case scan_persisting("0", config(:persistence_batch_size), MapSet.new()) do
+      {:ok, message_ids} ->
+        message_ids |> MapSet.to_list() |> persist()
 
-    case Redix.command(@redis, command) do
-      {:ok, message_ids} when is_list(message_ids) ->
-        persist(message_ids)
-
-      _ ->
+      {:error, _reason} ->
         ChatchatTcp.Telemetry.persistence_failure(:redis_unavailable)
         0
+    end
+  end
+
+  defp scan_persisting(cursor, limit, message_ids) do
+    remaining = limit - MapSet.size(message_ids)
+
+    if remaining == 0 do
+      {:ok, message_ids}
+    else
+      command = ["SSCAN", RedisKeys.persisting_set(), cursor, "COUNT", remaining]
+
+      case Redix.command(@redis, command) do
+        {:ok, [next_cursor, members]} when is_binary(next_cursor) and is_list(members) ->
+          message_ids =
+            members
+            |> Enum.take(remaining)
+            |> Enum.reduce(message_ids, &MapSet.put(&2, &1))
+
+          if next_cursor == "0" do
+            {:ok, message_ids}
+          else
+            scan_persisting(next_cursor, limit, message_ids)
+          end
+
+        response ->
+          {:error, response}
+      end
     end
   end
 
