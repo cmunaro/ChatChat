@@ -5,6 +5,7 @@ defmodule ChatchatClient do
 
   @ping_interval 30_000
   @reconnect_interval 1_000
+  @call_timeout 15_000
 
   @spec run(binary()) :: pid()
   def run(username) when is_binary(username) do
@@ -47,15 +48,15 @@ defmodule ChatchatClient do
   @spec send_message(from :: pid(), to :: pid(), message :: String.t()) ::
           :ok | {:error, term()}
   def send_message(from, to, message) when is_pid(from) and is_pid(to) and is_binary(message) do
-    user_id = GenServer.call(to, :user_id)
-    GenServer.call(from, {:send_message, user_id, message})
+    user_id = GenServer.call(to, :user_id, @call_timeout)
+    GenServer.call(from, {:send_message, user_id, message}, @call_timeout)
   end
 
   @spec send_message(from :: pid(), to :: integer(), message :: String.t()) ::
           :ok | {:error, term()}
   def send_message(from, to, message)
       when is_pid(from) and is_integer(to) and is_binary(message) do
-    GenServer.call(from, {:send_message, to, message})
+    GenServer.call(from, {:send_message, to, message}, @call_timeout)
   end
 
   def send_message(_, _, _), do: {:error, :invalid_params}
