@@ -15,8 +15,15 @@ defmodule ChatchatClient.SimulatedClient do
 
   @impl true
   def init(options) do
-    state = Map.new(options) |> Map.merge(%{client: nil, monitor: nil, announced_ready: false})
-    schedule_tick()
+    state =
+      Map.new(options)
+      |> Map.merge(%{
+        client: nil,
+        monitor: nil,
+        announced_ready: false,
+        activity_started: false
+      })
+
     {:ok, state, {:continue, :start_client}}
   end
 
@@ -26,6 +33,13 @@ defmodule ChatchatClient.SimulatedClient do
   @impl true
   def handle_info(:start_client, %{client: nil} = state), do: start_client(state)
   def handle_info(:start_client, state), do: {:noreply, state}
+
+  def handle_info(:start_activity, %{activity_started: false} = state) do
+    schedule_tick()
+    {:noreply, %{state | activity_started: true}}
+  end
+
+  def handle_info(:start_activity, state), do: {:noreply, state}
 
   def handle_info(:tick, %{client: client} = state) when is_pid(client) do
     if selected?(state.send_probability), do: send_message(state)
@@ -72,10 +86,11 @@ defmodule ChatchatClient.SimulatedClient do
 
   defp register_client(state, client) do
     monitor = Process.monitor(client)
-    true = :ets.insert(state.clients, {state.index, client})
+    user_id = GenServer.call(client, :user_id)
+    true = :ets.insert(state.clients, {state.index, client, user_id})
 
     unless state.announced_ready do
-      send(state.simulator, {:client_ready, state.index})
+      send(state.simulator, {:client_ready, state.index, self()})
     end
 
     {:noreply, %{state | client: client, monitor: monitor, announced_ready: true}}
@@ -98,7 +113,7 @@ defmodule ChatchatClient.SimulatedClient do
     index = :rand.uniform(state.number_of_clients)
 
     case :ets.lookup(state.clients, index) do
-      [{^index, recipient}] when recipient != state.client -> recipient
+      [{^index, recipient, user_id}] when recipient != state.client -> user_id
       _ -> random_recipient(state, attempts - 1)
     end
   end

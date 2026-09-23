@@ -123,8 +123,10 @@ simulation =
   })
 ```
 
-Every client independently evaluates once per second whether to send one message and whether to
-temporarily disconnect. Disconnected clients reconnect automatically.
+The simulator first creates, authenticates, and connects every requested client. Only after all
+clients are ready does the simulation enter its running phase and start the duration timer. During
+that phase, every client independently evaluates once per second whether to send one message and
+whether to temporarily disconnect. Disconnected clients reconnect automatically.
 
 Inspect or stop the simulation:
 

@@ -45,11 +45,11 @@ defmodule ChatchatClient.Simulator do
       clients: clients,
       prefix: prefix,
       started: 0,
-      startup_failures: 0
+      startup_failures: 0,
+      activity_started: false
     }
 
     send(self(), :start_batch)
-    schedule_stop(options.duration_seconds)
     {:ok, state}
   end
 
@@ -62,7 +62,8 @@ defmodule ChatchatClient.Simulator do
       wrappers_started: state.started,
       running_wrappers: children.active,
       ready_clients: :ets.info(state.clients, :size),
-      startup_failures: state.startup_failures
+      startup_failures: state.startup_failures,
+      phase: if(state.activity_started, do: :running, else: :connecting)
     }
 
     {:reply, status, state}
@@ -73,10 +74,19 @@ defmodule ChatchatClient.Simulator do
     {:noreply, start_clients(state, state.options.creation_concurrency)}
   end
 
-  def handle_info({:client_ready, _index}, state) do
-    if state.started < state.options.number_of_clients do
-      Process.send_after(self(), :start_next, state.options.ramp_interval_ms)
-    end
+  def handle_info({:client_ready, _index, wrapper}, %{activity_started: true} = state) do
+    send(wrapper, :start_activity)
+    {:noreply, state}
+  end
+
+  def handle_info({:client_ready, _index, _wrapper}, state) do
+    state =
+      if :ets.info(state.clients, :size) == state.options.number_of_clients do
+        start_activity(state)
+      else
+        Process.send_after(self(), :start_next, state.options.ramp_interval_ms)
+        state
+      end
 
     {:noreply, state}
   end
@@ -166,6 +176,15 @@ defmodule ChatchatClient.Simulator do
 
   defp schedule_stop(:infinity), do: :ok
   defp schedule_stop(seconds), do: Process.send_after(self(), :stop, seconds * 1_000)
+
+  defp start_activity(state) do
+    state.supervisor
+    |> DynamicSupervisor.which_children()
+    |> Enum.each(fn {_id, wrapper, _type, _modules} -> send(wrapper, :start_activity) end)
+
+    schedule_stop(state.options.duration_seconds)
+    %{state | activity_started: true}
+  end
 
   defp configure_http_pool(creation_concurrency) do
     {:ok, options} = :httpc.get_options([:max_sessions])
