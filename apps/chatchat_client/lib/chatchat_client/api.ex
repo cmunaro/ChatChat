@@ -1,7 +1,5 @@
 defmodule ChatchatClient.Api do
-  @base_url "http://localhost:4000"
   @password "chatchat-client-password"
-  @timeout 10_000
 
   @spec register(binary()) :: :ok | {:error, term()}
   def register(username) do
@@ -27,8 +25,8 @@ defmodule ChatchatClient.Api do
     with {:ok, {{_version, 200, _phrase}, _headers, body}} <-
            :httpc.request(
              :get,
-             {String.to_charlist("#{@base_url}/api/user/search?#{query}"), headers},
-             [timeout: @timeout],
+             {String.to_charlist("#{base_url()}/api/user/search?#{query}"), headers},
+             [timeout: timeout()],
              body_format: :binary
            ) do
       Jason.decode(body)
@@ -37,15 +35,18 @@ defmodule ChatchatClient.Api do
 
   defp post(path, payload) do
     request = {
-      String.to_charlist(@base_url <> path),
+      String.to_charlist(base_url() <> path),
       [{~c"accept", ~c"application/json"}],
       ~c"application/json",
       Jason.encode!(payload)
     }
 
-    case :httpc.request(:post, request, [timeout: @timeout], body_format: :binary) do
+    case :httpc.request(:post, request, [timeout: timeout()], body_format: :binary) do
       {:ok, {{_version, status, _phrase}, _headers, body}} -> {:ok, status, body}
       error -> error
     end
   end
+
+  defp base_url, do: Application.get_env(:chatchat_client, :http_url, "http://localhost:4000")
+  defp timeout, do: Application.get_env(:chatchat_client, :request_timeout, 10_000)
 end

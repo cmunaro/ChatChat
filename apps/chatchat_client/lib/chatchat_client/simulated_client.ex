@@ -75,7 +75,13 @@ defmodule ChatchatClient.SimulatedClient do
   end
 
   defp start_client(state) do
-    client = ChatchatClient.run(state.username)
+    client =
+      if state.user_id do
+        ChatchatClient.run_preprovisioned(state.username, state.user_id)
+      else
+        ChatchatClient.run(state.username)
+      end
+
     register_client(state, client)
   rescue
     _error ->

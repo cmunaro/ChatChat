@@ -5,7 +5,6 @@ defmodule ChatchatClient do
 
   @ping_interval 30_000
   @reconnect_interval 1_000
-  @call_timeout 15_000
 
   @spec run(binary()) :: pid()
   def run(username) when is_binary(username) do
@@ -27,6 +26,28 @@ defmodule ChatchatClient do
     end
   end
 
+  @spec run_preprovisioned(binary(), pos_integer()) :: pid()
+  def run_preprovisioned(username, user_id)
+      when is_binary(username) and is_integer(user_id) and user_id > 0 do
+    token = ChatchatAuth.issue(user_id).access_token
+
+    with {:ok, socket, ^user_id} <- Socket.connect(token),
+         {:ok, pid} <-
+           GenServer.start(__MODULE__, %{
+             username: username,
+             user_id: user_id,
+             token: token,
+             socket: socket,
+             preprovisioned: true
+           }),
+         :ok <- :gen_tcp.controlling_process(socket, pid),
+         :ok <- GenServer.call(pid, :activate_socket) do
+      pid
+    else
+      {:error, reason} -> raise "could not start preprovisioned client: #{inspect(reason)}"
+    end
+  end
+
   @spec simulate(map()) :: pid()
   def simulate(options), do: ChatchatClient.Simulator.start(options)
 
@@ -35,6 +56,9 @@ defmodule ChatchatClient do
 
   @spec simulation_status(pid()) :: map()
   def simulation_status(simulation), do: GenServer.call(simulation, :status)
+
+  @spec start_simulation_activity(pid()) :: :ok | {:error, atom()}
+  def start_simulation_activity(simulation), do: GenServer.call(simulation, :start_activity)
 
   @spec disconnect(pid()) :: :ok
   def disconnect(client), do: GenServer.cast(client, :disconnect)
@@ -48,21 +72,22 @@ defmodule ChatchatClient do
   @spec send_message(from :: pid(), to :: pid(), message :: String.t()) ::
           :ok | {:error, term()}
   def send_message(from, to, message) when is_pid(from) and is_pid(to) and is_binary(message) do
-    user_id = GenServer.call(to, :user_id, @call_timeout)
-    GenServer.call(from, {:send_message, user_id, message}, @call_timeout)
+    user_id = GenServer.call(to, :user_id, call_timeout())
+    GenServer.call(from, {:send_message, user_id, message}, call_timeout())
   end
 
   @spec send_message(from :: pid(), to :: integer(), message :: String.t()) ::
           :ok | {:error, term()}
   def send_message(from, to, message)
       when is_pid(from) and is_integer(to) and is_binary(message) do
-    GenServer.call(from, {:send_message, to, message}, @call_timeout)
+    GenServer.call(from, {:send_message, to, message}, call_timeout())
   end
 
   def send_message(_, _, _), do: {:error, :invalid_params}
 
   @impl true
   def init(state) do
+    state = Map.merge(%{preprovisioned: false}, state)
     state = Map.merge(state, %{ping_timer: nil, reconnect_timer: nil})
     {:ok, schedule_ping(state)}
   end
@@ -138,7 +163,7 @@ defmodule ChatchatClient do
   def handle_info(:reconnect, %{socket: nil} = state) do
     state = %{state | reconnect_timer: nil}
 
-    with {:ok, token} <- Api.login(state.username),
+    with {:ok, token} <- reconnect_token(state),
          {:ok, socket, _user_id} <- Socket.connect(token),
          :ok <- Socket.activate(socket) do
       state = %{state | token: token, socket: socket}
@@ -150,6 +175,12 @@ defmodule ChatchatClient do
   end
 
   def handle_info(:reconnect, state), do: {:noreply, %{state | reconnect_timer: nil}}
+
+  defp reconnect_token(%{preprovisioned: true, user_id: user_id}) do
+    {:ok, ChatchatAuth.issue(user_id).access_token}
+  end
+
+  defp reconnect_token(state), do: Api.login(state.username)
 
   @impl true
   def terminate(_reason, %{socket: socket} = state) do
@@ -220,4 +251,8 @@ defmodule ChatchatClient do
 
   defp cancel_timer(nil), do: :ok
   defp cancel_timer(timer), do: Process.cancel_timer(timer)
+
+  defp call_timeout do
+    Application.get_env(:chatchat_client, :request_timeout, 10_000) + 5_000
+  end
 end

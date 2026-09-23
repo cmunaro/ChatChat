@@ -20,6 +20,8 @@ services:
       timeout: 5s
       retries: 10
       start_period: 5s
+    networks:
+      - loadtest
 
   redis:
     image: redis:8.10.1-alpine
@@ -35,6 +37,108 @@ services:
       timeout: 5s
       retries: 10
       start_period: 5s
+    networks:
+      - loadtest
+
+  web:
+    build:
+      context: .
+      args:
+        BUILDER_IMAGE: hexpm/elixir:1.20.4-erlang-29.0.5-debian-bookworm-20260824-slim
+        RELEASE_NAME: chatchat_web
+    environment:
+      DATABASE_URL: "ecto://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db/${POSTGRES_DB}"
+      SECRET_KEY_BASE: "1234567890123456789012345678901234567890123456789012345678901234"
+      PORT: "4000"
+    ports:
+      - "4000:4000"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - loadtest
+
+  tcp:
+    build:
+      context: .
+      args:
+        BUILDER_IMAGE: hexpm/elixir:1.20.4-erlang-29.0.5-debian-bookworm-20260824-slim
+        RELEASE_NAME: chatchat_tcp
+    environment:
+      DATABASE_URL: "ecto://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db/${POSTGRES_DB}"
+      REDIS_URL: "redis://redis:6379"
+      SECRET_KEY_BASE: "1234567890123456789012345678901234567890123456789012345678901234"
+      TCP_PORT: "4040"
+      METRICS_PORT: "9568"
+    ports:
+      - "4040:4040"
+      - "9568:9568"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - loadtest
+
+  provision:
+    profiles: ["loadtest"]
+    image: chatchat-web
+    command:
+      - eval
+      - "{:ok, _} = Application.ensure_all_started(:chatchat_broker); ChatchatBroker.LoadTestProvisioner.run(500000)"
+    environment:
+      DATABASE_URL: "ecto://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db/${POSTGRES_DB}"
+      SECRET_KEY_BASE: "1234567890123456789012345678901234567890123456789012345678901234"
+      RELEASE_NAME: chatchat_web
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - loadtest
+
+  loadgen:
+    profiles: ["loadtest"]
+    build:
+      context: .
+      args:
+        BUILDER_IMAGE: hexpm/elixir:1.20.4-erlang-29.0.5-debian-bookworm-20260824-slim
+        RELEASE_NAME: chatchat_client
+    environment:
+      HTTP_URL: "http://web:4000"
+      TCP_HOST: tcp
+      TCP_PORT: "4040"
+      SECRET_KEY_BASE: "1234567890123456789012345678901234567890123456789012345678901234"
+      CLIENTS_PER_LOADGEN: "50000"
+      LOADGEN_PARTICIPANTS: "10"
+      LOAD_TEST_FIRST_USER_ID: "1500000001"
+      LOAD_TEST_RUN_ID: "500k-20260923-2"
+      CLIENT_CREATION_CONCURRENCY: "40"
+      CLIENT_RAMP_INTERVAL_MS: "5"
+      CLIENT_REQUEST_TIMEOUT: "60000"
+      LOAD_TEST_CONNECT_TIMEOUT_SECONDS: "21600"
+      LOAD_TEST_DURATION_SECONDS: "900"
+      SEND_PROBABILITY: "1.0"
+      DISCONNECTION_PROBABILITY: "0.15"
+      MESSAGE_PAYLOAD_SIZE: "128"
+    ulimits:
+      nofile:
+        soft: 100000
+        hard: 100000
+    sysctls:
+      net.ipv4.ip_local_port_range: "1024 65535"
+    volumes:
+      - loadtest_barrier:/barrier
+    user: "0"
+    depends_on:
+      provision:
+        condition: service_completed_successfully
+      web:
+        condition: service_started
+      tcp:
+        condition: service_started
+    networks:
+      - loadtest
 
   prometheus:
     image: prom/prometheus:v3.13.3-distroless
@@ -47,6 +151,8 @@ services:
       - prometheus_distroless_data:/prometheus
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    networks:
+      - loadtest
 
   grafana:
     image: grafana/grafana:13.0.8-distroless
@@ -63,9 +169,19 @@ services:
       - grafana_data:/var/lib/grafana
     depends_on:
       - prometheus
+    networks:
+      - loadtest
 
 volumes:
   postgres_data:
   redis_data:
   prometheus_distroless_data:
   grafana_data:
+  loadtest_barrier:
+
+networks:
+  loadtest:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/16

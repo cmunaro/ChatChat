@@ -6,24 +6,24 @@ Elixir distributed real-time chat exercise.
 
 - [x] Register and ogin
 - [x] Search users
-- [~] 1to1 chats
+- [x] 1to1 chats
 - [ ] Group chats
 - [~] Send text, images and files
 - [ ] React to messages
 - [ ] Edit messages
 - [ ] Delete messages
-- [ ] Store and retry undelivered messages
+- [x] Store and retry undelivered messages
 - [ ] Admin dashboard
   - [ ] Live connections
   - [ ] Delivery statistics
   - [ ] Latency, mailbox and bottleneck metrics
   - [ ] Entity management
   - [x] Api documentation
-- [ ] High-load client simulation
+- [x] High-load client simulation
 - [x] User discovery by username
 - [ ] Conversation membership and authorization
 - [x] Online presence
-- [ ] Offline message delivery
+- [x] Offline message delivery
 - [ ] Groups
   - [ ] Creation
   - [ ] Deletion
@@ -32,8 +32,8 @@ Elixir distributed real-time chat exercise.
 
 ## Implementation
 
-- [ ] Release-based Docker images
-- [~] Docker Compose development environment
+- [x] Release-based Docker images
+- [x] Docker Compose development environment
 - [x] Ecto SQL storage and migrations
 - [ ] Phoenix HTTP API and LiveView admin
 - [~] Thousand Island custom encrypted protocol
@@ -49,7 +49,7 @@ Elixir distributed real-time chat exercise.
   - [x] OpenAPI specification
   - [ ] Swagger UI in admin
 - [ ] Backpressure handling
-- [ ] Multi-node and high-load simulations
+- [x] Multi-node and high-load simulations
 - [~] GitHub Actions
   - [x] Unit and integration tests
   - [~] Format and Credo checks
@@ -145,3 +145,12 @@ Optional settings:
   message_payload_size: 32
 }
 ```
+
+### Docker load test
+
+```sh
+docker compose --profile loadtest up -d --build --scale loadgen=10
+```
+
+The active message stage starts only after every generator has announced that its entire shard is
+connected
