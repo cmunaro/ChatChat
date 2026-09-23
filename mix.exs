@@ -26,7 +26,8 @@ defmodule ChatChat.MixProject do
     [
       chatchat_web: [applications: [chatchat_web: :permanent]],
       chatchat_broker: [applications: [chatchat_broker: :permanent]],
-      chatchat_tcp: [applications: [chatchat_tcp: :permanent]]
+      chatchat_tcp: [applications: [chatchat_tcp: :permanent]],
+      chatchat_client: [applications: [chatchat_client: :permanent]]
     ]
   end
 end

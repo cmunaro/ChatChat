@@ -26,6 +26,7 @@ defmodule ChatchatClient.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
+      {:chatchat_auth, in_umbrella: true},
       {:ecto, "~> 3.14"},
       {:jason, "~> 1.4"}
     ]

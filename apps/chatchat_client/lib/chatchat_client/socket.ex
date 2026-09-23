@@ -1,13 +1,9 @@
 defmodule ChatchatClient.Socket do
   require Logger
 
-  @host ~c"localhost"
-  @port 4040
-  @timeout 10_000
-
   @spec connect(binary()) :: {:ok, port(), pos_integer()} | {:error, term()}
   def connect(token) do
-    case :gen_tcp.connect(@host, @port, [:binary, active: false, packet: :line], @timeout) do
+    case :gen_tcp.connect(host(), port(), [:binary, active: false, packet: :line], timeout()) do
       {:ok, socket} -> authenticate(socket, token)
       error -> error
     end
@@ -109,11 +105,14 @@ defmodule ChatchatClient.Socket do
   end
 
   defp receive_frame(socket) do
-    with {:ok, line} <- :gen_tcp.recv(socket, 0, @timeout), do: decode(line)
+    with {:ok, line} <- :gen_tcp.recv(socket, 0, timeout()), do: decode(line)
   end
 
-  defp deadline, do: System.monotonic_time(:millisecond) + @timeout
+  defp deadline, do: System.monotonic_time(:millisecond) + timeout()
   defp remaining(deadline), do: max(deadline - System.monotonic_time(:millisecond), 0)
+  defp host, do: Application.get_env(:chatchat_client, :tcp_host, "localhost") |> to_charlist()
+  defp port, do: Application.get_env(:chatchat_client, :tcp_port, 4040)
+  defp timeout, do: Application.get_env(:chatchat_client, :request_timeout, 10_000)
 
   defp decode(line), do: Jason.decode(String.trim_trailing(line, "\n"))
 end

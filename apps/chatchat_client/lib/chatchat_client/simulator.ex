@@ -7,7 +7,10 @@ defmodule ChatchatClient.Simulator do
     creation_concurrency: 40,
     ramp_interval_ms: 0,
     duration_seconds: :infinity,
-    message_payload_size: 32
+    message_payload_size: 32,
+    auto_start_activity: true,
+    username_prefix: nil,
+    first_user_id: nil
   }
 
   def start(options) do
@@ -37,7 +40,7 @@ defmodule ChatchatClient.Simulator do
   def init(options) do
     {:ok, supervisor} = DynamicSupervisor.start_link(strategy: :one_for_one)
     clients = :ets.new(:simulated_clients, [:set, :public])
-    prefix = "sim_#{System.unique_integer([:positive])}"
+    prefix = options.username_prefix || "sim_#{System.unique_integer([:positive])}"
 
     state = %{
       options: options,
@@ -63,10 +66,18 @@ defmodule ChatchatClient.Simulator do
       running_wrappers: children.active,
       ready_clients: :ets.info(state.clients, :size),
       startup_failures: state.startup_failures,
-      phase: if(state.activity_started, do: :running, else: :connecting)
+      phase: phase(state)
     }
 
     {:reply, status, state}
+  end
+
+  def handle_call(:start_activity, _from, state) do
+    if phase(state) == :ready do
+      {:reply, :ok, start_activity(state)}
+    else
+      {:reply, {:error, phase(state)}, state}
+    end
   end
 
   @impl true
@@ -81,7 +92,8 @@ defmodule ChatchatClient.Simulator do
 
   def handle_info({:client_ready, _index, _wrapper}, state) do
     state =
-      if :ets.info(state.clients, :size) == state.options.number_of_clients do
+      if :ets.info(state.clients, :size) == state.options.number_of_clients and
+           state.options.auto_start_activity do
         start_activity(state)
       else
         Process.send_after(self(), :start_next, state.options.ramp_interval_ms)
@@ -117,6 +129,15 @@ defmodule ChatchatClient.Simulator do
     require_non_negative_integer!(options, :ramp_interval_ms)
     require_positive_integer!(options, :message_payload_size)
 
+    unless is_boolean(options.auto_start_activity) do
+      raise ArgumentError, "auto_start_activity must be a boolean"
+    end
+
+    unless is_nil(options.first_user_id) or
+             (is_integer(options.first_user_id) and options.first_user_id > 0) do
+      raise ArgumentError, "first_user_id must be nil or a positive integer"
+    end
+
     case options.duration_seconds do
       :infinity -> :ok
       duration when is_integer(duration) and duration > 0 -> :ok
@@ -135,9 +156,12 @@ defmodule ChatchatClient.Simulator do
       first = state.started + 1
 
       Enum.reduce(first..(first + count - 1), state, fn index, acc ->
+        user_id = if acc.options.first_user_id, do: acc.options.first_user_id + index - 1
+
         options = [
           index: index,
-          username: "#{acc.prefix}_#{index}",
+          username: username(acc, index, user_id),
+          user_id: user_id,
           simulator: self(),
           clients: acc.clients,
           number_of_clients: acc.options.number_of_clients,
@@ -186,9 +210,20 @@ defmodule ChatchatClient.Simulator do
     %{state | activity_started: true}
   end
 
+  defp phase(%{activity_started: true}), do: :running
+
+  defp phase(state) do
+    if :ets.info(state.clients, :size) == state.options.number_of_clients,
+      do: :ready,
+      else: :connecting
+  end
+
   defp configure_http_pool(creation_concurrency) do
     {:ok, options} = :httpc.get_options([:max_sessions])
     current_max = Keyword.fetch!(options, :max_sessions)
     :ok = :httpc.set_options(max_sessions: max(current_max, creation_concurrency))
   end
+
+  defp username(_state, _index, user_id) when is_integer(user_id), do: "loadtest_#{user_id}"
+  defp username(state, index, nil), do: "#{state.prefix}_#{index}"
 end
