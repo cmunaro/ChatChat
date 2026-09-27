@@ -27,20 +27,22 @@ defmodule ChatchatTcp.RedisScript do
     case Redix.pipeline(connection, commands) do
       {:ok, results} = result ->
         if Enum.any?(results, &noscript?/1) do
-          with :ok <- load(connection, script, sha) do
-            Redix.pipeline(connection, commands)
-          end
+          reload_and_pipeline(connection, script, sha, commands)
         else
           result
         end
 
       {:error, %Redix.Error{message: "NOSCRIPT" <> _}} ->
-        with :ok <- load(connection, script, sha) do
-          Redix.pipeline(connection, commands)
-        end
+        reload_and_pipeline(connection, script, sha, commands)
 
       result ->
         result
+    end
+  end
+
+  defp reload_and_pipeline(connection, script, sha, commands) do
+    with :ok <- load(connection, script, sha) do
+      Redix.pipeline(connection, commands)
     end
   end
 

@@ -18,9 +18,8 @@ defmodule ChatchatClient.Socket do
   def request(nil, _request, _response_matcher), do: {:error, :disconnected}
 
   def request(socket, request, response_matcher) do
-    with :ok <- send_frame(socket, request),
-         {:ok, response} <- receive_response(socket, response_matcher, deadline()) do
-      {:ok, response}
+    with :ok <- send_frame(socket, request) do
+      receive_response(socket, response_matcher, deadline())
     end
   end
 

@@ -475,9 +475,8 @@ defmodule ChatchatTcpTest do
   end
 
   defp recv_json(socket) do
-    with {:ok, line} <- :gen_tcp.recv(socket, 0, 1_000),
-         {:ok, payload} <- Jason.decode(String.trim_trailing(line, "\n")) do
-      {:ok, payload}
+    with {:ok, line} <- :gen_tcp.recv(socket, 0, 1_000) do
+      Jason.decode(String.trim_trailing(line, "\n"))
     end
   end
 

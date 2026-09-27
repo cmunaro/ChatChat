@@ -152,31 +152,35 @@ defmodule ChatchatClient.Simulator do
   defp start_clients(state, maximum) do
     count = min(state.options.number_of_clients - state.started, maximum)
 
-    if count > 0 do
-      first = state.started + 1
+    case count do
+      count when count > 0 -> start_client_range(state, count)
+      _ -> state
+    end
+  end
 
-      Enum.reduce(first..(first + count - 1), state, fn index, acc ->
-        user_id = if acc.options.first_user_id, do: acc.options.first_user_id + index - 1
+  defp start_client_range(state, count) do
+    first = state.started + 1
+    Enum.reduce(first..(first + count - 1), state, &start_client/2)
+  end
 
-        options = [
-          index: index,
-          username: username(acc, index, user_id),
-          user_id: user_id,
-          simulator: self(),
-          clients: acc.clients,
-          number_of_clients: acc.options.number_of_clients,
-          send_probability: acc.options.send_message_probability_per_second,
-          disconnection_probability: acc.options.disconnection_probability_per_second,
-          message: String.duplicate("x", acc.options.message_payload_size)
-        ]
+  defp start_client(index, state) do
+    user_id = if state.options.first_user_id, do: state.options.first_user_id + index - 1
 
-        case DynamicSupervisor.start_child(acc.supervisor, {SimulatedClient, options}) do
-          {:ok, _pid} -> %{acc | started: acc.started + 1}
-          {:error, _reason} -> acc
-        end
-      end)
-    else
-      state
+    options = [
+      index: index,
+      username: username(state, index, user_id),
+      user_id: user_id,
+      simulator: self(),
+      clients: state.clients,
+      number_of_clients: state.options.number_of_clients,
+      send_probability: state.options.send_message_probability_per_second,
+      disconnection_probability: state.options.disconnection_probability_per_second,
+      message: String.duplicate("x", state.options.message_payload_size)
+    ]
+
+    case DynamicSupervisor.start_child(state.supervisor, {SimulatedClient, options}) do
+      {:ok, _pid} -> %{state | started: state.started + 1}
+      {:error, _reason} -> state
     end
   end
 
