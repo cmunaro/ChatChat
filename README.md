@@ -93,6 +93,15 @@ mix phx.server
 /openapi
 ```
 
+## Admin dashboard
+
+Create an administrator account
+```sh
+mix chatchat.admin.create admin
+```
+
+Dashboard: `http://localhost:4000/admin`
+
 ## Message delivery architecture
 
 [Message delivery flow](MESSAGE_DELIVERY.md)
