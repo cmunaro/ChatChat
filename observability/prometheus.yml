@@ -15,6 +15,10 @@ scrape_configs:
         type: A
         port: 9568
         refresh_interval: 5s
+  - job_name: chatchat_tcp_local
+    static_configs:
+      - targets:
+          - host.docker.internal:9568
   - job_name: haproxy
     metrics_path: /metrics
     static_configs:

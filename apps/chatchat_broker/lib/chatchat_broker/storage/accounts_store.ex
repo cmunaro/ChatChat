@@ -59,6 +59,9 @@ defmodule ChatchatBroker.Storage.AccountsStore do
     end)
   end
 
+  @spec count_users() :: non_neg_integer()
+  def count_users, do: Repo.aggregate(UserRecord, :count, :id)
+
   @spec admin?(pos_integer()) :: boolean()
   def admin?(user_id),
     do: Repo.exists?(from(admin in AdminUser, where: admin.user_id == ^user_id))

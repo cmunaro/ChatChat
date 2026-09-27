@@ -11,7 +11,7 @@ defmodule Mix.Tasks.Chatchat.Admin.Create do
   def run([username]) do
     Mix.Task.run("app.start")
 
-    password = System.get_env("CHATCHAT_ADMIN_PASSWORD") || prompt_for_password()
+    password = prompt_for_password()
 
     case Accounts.register_admin(username, password) do
       {:ok, admin} ->
@@ -27,18 +27,25 @@ defmodule Mix.Tasks.Chatchat.Admin.Create do
   end
 
   defp prompt_for_password do
-    first = read_password("Password: ")
-    confirmation = read_password("Confirm password: ")
+    password = read_hidden("Password: ")
+    confirmation = read_hidden("Confirm password: ")
 
-    if first == confirmation, do: first, else: Mix.raise("passwords do not match")
+    if password == confirmation, do: password, else: Mix.raise("passwords do not match")
   end
 
-  defp read_password(prompt) do
+  defp read_hidden(prompt) do
     IO.write(prompt)
+    :ok = :shell.start_interactive({:noshell, :raw})
 
-    case :io.get_password() do
-      password when is_list(password) -> List.to_string(password)
-      _unavailable -> Mix.raise("could not read password")
+    try do
+      case :io.get_password() do
+        password when is_binary(password) -> password
+        password when is_list(password) -> List.to_string(password)
+        _unavailable -> Mix.raise("could not read password from the terminal")
+      end
+    after
+      :shell.start_interactive({:noshell, :cooked})
+      IO.write("\n")
     end
   end
 end
