@@ -46,29 +46,31 @@ defmodule ChatchatTcp.MessagePersistence do
   defp scan_persisting(cursor, limit, message_ids) do
     remaining = limit - MapSet.size(message_ids)
 
-    if remaining == 0 do
-      {:ok, message_ids}
-    else
-      command = ["SSCAN", RedisKeys.persisting_set(), cursor, "COUNT", remaining]
-
-      case Redix.command(@redis, command) do
-        {:ok, [next_cursor, members]} when is_binary(next_cursor) and is_list(members) ->
-          message_ids =
-            members
-            |> Enum.take(remaining)
-            |> Enum.reduce(message_ids, &MapSet.put(&2, &1))
-
-          if next_cursor == "0" do
-            {:ok, message_ids}
-          else
-            scan_persisting(next_cursor, limit, message_ids)
-          end
-
-        response ->
-          {:error, response}
-      end
+    case remaining do
+      0 -> {:ok, message_ids}
+      remaining -> scan_persisting_page(cursor, limit, remaining, message_ids)
     end
   end
+
+  defp scan_persisting_page(cursor, limit, remaining, message_ids) do
+    command = ["SSCAN", RedisKeys.persisting_set(), cursor, "COUNT", remaining]
+
+    case Redix.command(@redis, command) do
+      {:ok, [next_cursor, members]} when is_binary(next_cursor) and is_list(members) ->
+        message_ids =
+          members
+          |> Enum.take(remaining)
+          |> Enum.reduce(message_ids, &MapSet.put(&2, &1))
+
+        continue_scan(next_cursor, limit, message_ids)
+
+      response ->
+        {:error, response}
+    end
+  end
+
+  defp continue_scan("0", _limit, message_ids), do: {:ok, message_ids}
+  defp continue_scan(cursor, limit, message_ids), do: scan_persisting(cursor, limit, message_ids)
 
   defp persist_expired do
     now = System.system_time(:millisecond)
