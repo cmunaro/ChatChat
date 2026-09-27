@@ -44,12 +44,6 @@ defmodule ChatchatClient.LoadGenerator do
   def handle_info(:poll, state) do
     status = ChatchatClient.simulation_status(state.simulation)
 
-    IO.inspect(
-      status
-      |> Map.put(:load_generator, state.options[:id])
-      |> Map.put(:shard, state.shard)
-    )
-
     enforce_connect_deadline!(state, status)
     state = announce_ready(state, status)
     start_if_ready(state, status)
