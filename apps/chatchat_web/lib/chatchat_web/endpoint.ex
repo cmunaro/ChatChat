@@ -1,6 +1,12 @@
 defmodule ChatchatWeb.Endpoint do
   use Phoenix.Endpoint, otp_app: :chatchat_web
 
+  @session_options [
+    store: :cookie,
+    key: "_chatchat_web_key",
+    signing_salt: "chatchat-live"
+  ]
+
   plug(Plug.RequestId)
   plug(Plug.Telemetry, event_prefix: [:phoenix, :endpoint])
   plug(PromEx.Plug, prom_ex_module: ChatchatWeb.PromEx)
@@ -14,6 +20,8 @@ defmodule ChatchatWeb.Endpoint do
     pass: ["application/json"],
     json_decoder: Phoenix.json_library()
   )
+
+  plug(Plug.Session, @session_options)
 
   plug(ChatchatWeb.Router)
 end

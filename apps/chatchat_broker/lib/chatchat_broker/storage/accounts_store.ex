@@ -4,6 +4,7 @@ defmodule ChatchatBroker.Storage.AccountsStore do
   alias ChatchatBroker.Domain.User
   alias ChatchatBroker.Domain.UserSearchResult
   alias ChatchatBroker.Repo
+  alias ChatchatBroker.Storage.Schemas.AdminUser
   alias ChatchatBroker.Storage.Schemas.User, as: UserRecord
 
   @spec insert_user(String.t(), String.t()) :: {:ok, User.t()} | {:error, [String.t()]}
@@ -15,6 +16,20 @@ defmodule ChatchatBroker.Storage.AccountsStore do
       {:ok, record} -> {:ok, to_user_domain(record)}
       {:error, changeset} -> {:error, error_messages(changeset)}
     end
+  end
+
+  @spec insert_admin(String.t(), String.t()) :: {:ok, User.t()} | {:error, [String.t()]}
+  def insert_admin(username, password_hash) do
+    Repo.transaction(fn ->
+      case insert_user(username, password_hash) do
+        {:ok, user} ->
+          Repo.insert!(%AdminUser{user_id: user.id})
+          user
+
+        {:error, errors} ->
+          Repo.rollback(errors)
+      end
+    end)
   end
 
   @spec fetch_credentials(String.t()) :: {:ok, User.t(), String.t()} | :error
@@ -43,6 +58,10 @@ defmodule ChatchatBroker.Storage.AccountsStore do
       %UserSearchResult{username: username, id: id}
     end)
   end
+
+  @spec admin?(pos_integer()) :: boolean()
+  def admin?(user_id),
+    do: Repo.exists?(from(admin in AdminUser, where: admin.user_id == ^user_id))
 
   defp to_user_domain(%UserRecord{} = record) do
     %User{

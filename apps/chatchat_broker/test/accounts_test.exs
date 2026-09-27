@@ -21,6 +21,18 @@ defmodule ChatchatBroker.AccountsTest do
     assert Argon2.verify_pass("1234567 abcd ", record.password_hash)
   end
 
+  test "registers and authenticates an administrator separately from regular users" do
+    assert {:ok, admin} = Accounts.register_admin("operator", "correct horse")
+    assert Accounts.admin?(admin.id)
+    assert {:ok, authenticated} = Accounts.authenticate_admin("operator", "correct horse")
+    assert authenticated.id == admin.id
+
+    assert {:ok, _user} = Accounts.register_user("alice", "correct horse")
+
+    assert {:error, :invalid_credentials} =
+             Accounts.authenticate_admin("alice", "correct horse")
+  end
+
   test "rejects a duplicate trimmed username" do
     assert {:ok, _user} = Accounts.register_user("alice", "1234567 abcd")
 

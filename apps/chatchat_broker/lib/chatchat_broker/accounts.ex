@@ -5,9 +5,18 @@ defmodule ChatchatBroker.Accounts do
 
   @spec register_user(term(), term()) :: {:ok, User.t()} | {:error, [String.t()]}
   def register_user(username, password) do
+    register(username, password, &AccountsStore.insert_user/2)
+  end
+
+  @spec register_admin(term(), term()) :: {:ok, User.t()} | {:error, [String.t()]}
+  def register_admin(username, password) do
+    register(username, password, &AccountsStore.insert_admin/2)
+  end
+
+  defp register(username, password, insert) do
     with {:ok, username} <- Username.validate(username),
          :ok <- Password.validate(password) do
-      AccountsStore.insert_user(username, Password.hash(password))
+      insert.(username, Password.hash(password))
     else
       {:error, message} -> {:error, [message]}
     end
@@ -26,6 +35,21 @@ defmodule ChatchatBroker.Accounts do
   end
 
   def authenticate_user(_username, _password), do: invalid_credentials()
+
+  @spec authenticate_admin(term(), term()) :: {:ok, User.t()} | {:error, :invalid_credentials}
+  def authenticate_admin(username, password) do
+    case authenticate_user(username, password) do
+      {:ok, %User{} = user} ->
+        if admin?(user.id), do: {:ok, user}, else: {:error, :invalid_credentials}
+
+      _result ->
+        {:error, :invalid_credentials}
+    end
+  end
+
+  @spec admin?(term()) :: boolean()
+  def admin?(user_id) when is_integer(user_id) and user_id > 0, do: AccountsStore.admin?(user_id)
+  def admin?(_user_id), do: false
 
   @spec search_user(term()) :: {:ok, [UserSearchResult.t()]} | {:error, String.t()}
   def search_user(name) when is_binary(name) do
