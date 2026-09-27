@@ -59,6 +59,7 @@ services:
       - loadtest
 
   tcp:
+    image: chatchat-tcp
     build:
       context: .
       args:
@@ -70,14 +71,28 @@ services:
       SECRET_KEY_BASE: "1234567890123456789012345678901234567890123456789012345678901234"
       TCP_PORT: "4040"
       METRICS_PORT: "9568"
-    ports:
-      - "4040:4040"
-      - "9568:9568"
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
+    networks:
+      - loadtest
+
+  haproxy:
+    image: haproxy:3.2.23-alpine
+    restart: unless-stopped
+    ports:
+      - "4040:4040"
+      - "8404:8404"
+    volumes:
+      - ./observability/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    ulimits:
+      nofile:
+        soft: 1048576
+        hard: 1048576
+    depends_on:
+      - tcp
     networks:
       - loadtest
 
@@ -106,7 +121,7 @@ services:
         RELEASE_NAME: chatchat_client
     environment:
       HTTP_URL: "http://web:4000"
-      TCP_HOST: tcp
+      TCP_HOST: haproxy
       TCP_PORT: "4040"
       SECRET_KEY_BASE: "1234567890123456789012345678901234567890123456789012345678901234"
       CLIENTS_PER_LOADGEN: "50000"
@@ -135,7 +150,7 @@ services:
         condition: service_completed_successfully
       web:
         condition: service_started
-      tcp:
+      haproxy:
         condition: service_started
     networks:
       - loadtest

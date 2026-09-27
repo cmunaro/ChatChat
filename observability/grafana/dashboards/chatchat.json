@@ -8,7 +8,7 @@
       "gridPos": {"h": 5, "w": 6, "x": 0, "y": 0},
       "fieldConfig": {"defaults": {"mappings": [{"type": "value", "options": {"0": {"text": "DOWN", "color": "red"}, "1": {"text": "UP", "color": "green"}}}], "thresholds": {"mode": "absolute", "steps": [{"color": "red"}, {"color": "green", "value": 1}]}}, "overrides": []},
       "options": {"colorMode": "background", "graphMode": "none", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
-      "targets": [{"expr": "up{job=~\"chatchat_web|chatchat_tcp\"}", "legendFormat": "{{job}}", "refId": "A"}]
+      "targets": [{"expr": "min by (job) (up{job=~\"chatchat_web|chatchat_tcp|haproxy\"})", "instant": true, "legendFormat": "{{job}}", "refId": "A"}]
     },
     {
       "id": 2, "title": "Connected TCP clients", "type": "stat",
@@ -16,7 +16,7 @@
       "gridPos": {"h": 5, "w": 6, "x": 6, "y": 0},
       "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green"}]}}, "overrides": []},
       "options": {"colorMode": "value", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
-      "targets": [{"expr": "chatchat_tcp_connected_clients", "legendFormat": "Connected", "refId": "A"}]
+      "targets": [{"expr": "sum(chatchat_tcp_connected_clients)", "instant": true, "legendFormat": "Connected", "refId": "A"}]
     },
     {
       "id": 3, "title": "Message backlogs", "type": "stat",
@@ -24,7 +24,7 @@
       "gridPos": {"h": 5, "w": 6, "x": 12, "y": 0},
       "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green"}, {"color": "orange", "value": 100}, {"color": "red", "value": 1000}]}}, "overrides": []},
       "options": {"colorMode": "value", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
-      "targets": [{"expr": "chatchat_redis_pending_messages", "legendFormat": "Redis", "refId": "A"}, {"expr": "chatchat_postgres_undelivered_messages", "legendFormat": "PostgreSQL", "refId": "B"}]
+      "targets": [{"expr": "max(chatchat_redis_pending_messages)", "instant": true, "legendFormat": "Redis", "refId": "A"}, {"expr": "max(chatchat_postgres_undelivered_messages)", "instant": true, "legendFormat": "PostgreSQL", "refId": "B"}]
     },
     {
       "id": 4, "title": "Delivery workers", "type": "stat",
@@ -32,7 +32,7 @@
       "gridPos": {"h": 5, "w": 6, "x": 18, "y": 0},
       "fieldConfig": {"defaults": {}, "overrides": []},
       "options": {"colorMode": "value", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
-      "targets": [{"expr": "chatchat_delivery_active_workers", "legendFormat": "Active", "refId": "A"}, {"expr": "chatchat_delivery_pending_receivers", "legendFormat": "Pending", "refId": "B"}]
+      "targets": [{"expr": "sum(chatchat_delivery_active_workers)", "instant": true, "legendFormat": "Active", "refId": "A"}, {"expr": "sum(chatchat_delivery_pending_receivers)", "instant": true, "legendFormat": "Pending", "refId": "B"}]
     },
     {
       "id": 5, "title": "Message throughput", "type": "timeseries",
@@ -137,6 +137,30 @@
       "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}, "overrides": []},
       "options": {"legend": {"displayMode": "table", "placement": "bottom"}, "tooltip": {"mode": "multi"}},
       "targets": [{"expr": "sum(rate(chatchat_messages_delivered_total[$__rate_interval])) / clamp_min(sum(rate(chatchat_messages_delivered_total[$__rate_interval])) + sum(rate(chatchat_message_delivery_failures_total[$__rate_interval])), 0.000001) or vector(0)", "legendFormat": "Success ratio", "refId": "A"}, {"expr": "sum(rate(chatchat_message_delivery_failures_total[$__rate_interval])) / clamp_min(sum(rate(chatchat_messages_delivered_total[$__rate_interval])) + sum(rate(chatchat_message_delivery_failures_total[$__rate_interval])), 0.000001) or vector(0)", "legendFormat": "Failure ratio", "refId": "B"}]
+    },
+    {
+      "id": 18, "title": "HAProxy backend health", "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 6, "w": 8, "x": 0, "y": 49},
+      "fieldConfig": {"defaults": {"mappings": [{"type": "value", "options": {"0": {"text": "DOWN", "color": "red"}, "1": {"text": "UP", "color": "green"}}}], "thresholds": {"mode": "absolute", "steps": [{"color": "red"}, {"color": "green", "value": 1}]}}, "overrides": []},
+      "options": {"colorMode": "background", "graphMode": "none", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
+      "targets": [{"expr": "(haproxy_server_status{proxy=\"chatchat_tcp_nodes\",state=\"UP\"} == 1) or ((1 - haproxy_server_status{proxy=\"chatchat_tcp_nodes\",state=\"DOWN\"}) == 0)", "instant": true, "legendFormat": "{{server}}", "refId": "A"}]
+    },
+    {
+      "id": 19, "title": "TCP connections per node", "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 6, "w": 8, "x": 8, "y": 49},
+      "fieldConfig": {"defaults": {"unit": "short", "min": 0}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom"}, "tooltip": {"mode": "multi"}},
+      "targets": [{"expr": "haproxy_server_current_sessions{proxy=\"chatchat_tcp_nodes\"}", "legendFormat": "{{server}}", "refId": "A"}]
+    },
+    {
+      "id": 20, "title": "HAProxy connection rate", "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 6, "w": 8, "x": 16, "y": 49},
+      "fieldConfig": {"defaults": {"unit": "cps", "min": 0}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom"}, "tooltip": {"mode": "multi"}},
+      "targets": [{"expr": "rate(haproxy_frontend_connections_total{proxy=\"chatchat_tcp\"}[$__rate_interval])", "legendFormat": "Accepted/s", "refId": "A"}]
     }
   ],
   "refresh": "5s",
@@ -147,5 +171,5 @@
   "timezone": "browser",
   "title": "ChatChat Overview",
   "uid": "chatchat-overview",
-  "version": 4
+  "version": 6
 }

@@ -102,7 +102,36 @@ mix phx.server
 - Prometheus: http://localhost:9090
 - Grafana: http://localhost:3000 (`admin` / `admin`)
 - Web application metrics: http://localhost:4000/metrics
-- TCP application metrics: http://localhost:9568/metrics
+- TCP application metrics: discovered per replica by Prometheus
+- HAProxy metrics: http://localhost:8404/metrics
+
+## TCP load balancing
+
+Docker Compose runs scalable `chatchat_tcp` replicas behind HAProxy. Clients always connect to
+`localhost:4040`; containers use `haproxy:4040`. HAProxy checks each replica's `/metrics` endpoint
+and sends each new long-lived connection to the replica with the fewest active connections. Docker
+DNS lets HAProxy and Prometheus add and remove replicas without hard-coded container names.
+
+```text
+client -> HAProxy :4040 -> tcp replica 1 :4040
+                       -> tcp replica 2 :4040
+                       -> ...
+```
+
+Start the local stack normally:
+
+```sh
+docker compose up -d --build --scale tcp=2
+```
+
+Change the replica count without editing HAProxy or Prometheus:
+
+```sh
+docker compose up -d --scale tcp=4
+```
+
+Prometheus scrapes every discovered TCP replica separately, while Grafana aggregates their metrics.
+HAProxy's own connection and backend-health metrics are also scraped.
 
 ## Client simulation
 

@@ -9,6 +9,14 @@ scrape_configs:
           - web:4000
   - job_name: chatchat_tcp
     metrics_path: /metrics
+    dns_sd_configs:
+      - names:
+          - tcp
+        type: A
+        port: 9568
+        refresh_interval: 5s
+  - job_name: haproxy
+    metrics_path: /metrics
     static_configs:
       - targets:
-          - tcp:9568
+          - haproxy:8404
