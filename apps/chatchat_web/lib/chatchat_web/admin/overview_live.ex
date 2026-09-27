@@ -3,11 +3,15 @@ defmodule ChatchatWeb.Admin.OverviewLive do
 
   use Phoenix.LiveView, layout: {ChatchatWeb.Layouts, :app}
 
+  alias ChatchatBroker.Accounts
+
   @refresh_interval 5_000
 
   @impl true
   def mount(_params, _session, socket) do
     if connected?(socket), do: schedule_refresh()
+
+    socket = assign(socket, search_query: "", search_results: [], search_error: nil)
 
     {:ok, refresh(socket)}
   end
@@ -16,6 +20,17 @@ defmodule ChatchatWeb.Admin.OverviewLive do
   def handle_info(:refresh, socket) do
     schedule_refresh()
     {:noreply, refresh(socket)}
+  end
+
+  @impl true
+  def handle_event("search", %{"name" => name}, socket) do
+    case Accounts.search_user(name) do
+      {:ok, users} ->
+        {:noreply, assign(socket, search_query: name, search_results: users, search_error: nil)}
+
+      {:error, message} ->
+        {:noreply, assign(socket, search_query: name, search_results: [], search_error: message)}
+    end
   end
 
   @impl true
@@ -67,10 +82,54 @@ defmodule ChatchatWeb.Admin.OverviewLive do
         />
       </section>
 
-      <section class="next-section">
-        <span>Next</span>
-        <h2>User list and search</h2>
-        <p>The next iteration will add paginated account discovery and presence state.</p>
+      <section class="users-section" aria-labelledby="users-heading">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Accounts</p>
+            <h2 id="users-heading">User search</h2>
+          </div>
+          <p>Searches are limited to 20 results.</p>
+        </div>
+
+        <form id="user-search-form" phx-submit="search" class="search-form">
+          <label class="sr-only" for="user-search">Username</label>
+          <input
+            id="user-search"
+            type="search"
+            name="name"
+            value={@search_query}
+            placeholder="Search by username"
+            autocomplete="off"
+            minlength="3"
+            required
+          />
+          <button type="submit">Search</button>
+        </form>
+
+        <p :if={@search_error} id="user-search-error" class="search-message error" role="alert">
+          <%= @search_error %>
+        </p>
+
+        <div :if={@search_results != []} class="users-table-wrapper">
+          <table id="user-search-results">
+            <thead>
+              <tr><th scope="col">ID</th><th scope="col">Username</th></tr>
+            </thead>
+            <tbody>
+              <tr :for={user <- @search_results} id={"user-#{user.id}"}>
+                <td><%= user.id %></td>
+                <td><%= user.username %></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p
+          :if={@search_query != "" and is_nil(@search_error) and @search_results == []}
+          class="search-message"
+        >
+          No users found.
+        </p>
       </section>
     </main>
     """

@@ -47,6 +47,7 @@ defmodule ChatchatWeb.Admin.OverviewLiveTest do
     assert body =~ "18"
     assert body =~ "Messages in delivery DB"
     assert body =~ "7"
+    assert body =~ "User search"
   end
 
   test "GET /admin redirects an anonymous visitor to the login page" do
