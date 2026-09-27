@@ -37,8 +37,13 @@ config :chatchat_tcp,
 
 config :chatchat_web, ChatchatWeb.Endpoint,
   adapter: Bandit.PhoenixAdapter,
+  live_view: [signing_salt: "chatchat-live-view"],
   render_errors: [formats: [json: ChatchatWeb.ErrorJSON], layout: false],
   pubsub_server: ChatchatWeb.PubSub
+
+config :chatchat_web,
+  prometheus_url: "http://localhost:9090",
+  prometheus_tcp_job: "chatchat_tcp_local"
 
 config :phoenix, :json_library, Jason
 
