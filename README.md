@@ -52,7 +52,7 @@ Elixir distributed real-time chat exercise.
 - [x] Multi-node and high-load simulations
 - [~] GitHub Actions
   - [x] Unit and integration tests
-  - [~] Format and Credo checks
+  - [x] Format and Credo checks
   - [~] Images published to GitHub image registry
 - [x] Latest Elixir/Erlang versions pinned with mise
 - [ ] Horizontal autoscaling experiment
