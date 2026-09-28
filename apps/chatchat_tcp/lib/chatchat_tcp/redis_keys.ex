@@ -1,6 +1,7 @@
 defmodule ChatchatTcp.RedisKeys do
   @sending_deadlines "chatchat:sending_deadlines"
   @persisting "chatchat:persisting"
+  @admin_messages_channel "chatchat:admin:messages"
 
   @spec message(Ecto.UUID.t()) :: binary()
   def message(message_id), do: "chatchat:message:#{message_id}"
@@ -22,4 +23,7 @@ defmodule ChatchatTcp.RedisKeys do
 
   @spec persisting_set() :: binary()
   def persisting_set, do: @persisting
+
+  @spec admin_messages_channel() :: binary()
+  def admin_messages_channel, do: @admin_messages_channel
 end

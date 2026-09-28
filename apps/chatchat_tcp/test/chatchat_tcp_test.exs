@@ -100,6 +100,12 @@ defmodule ChatchatTcpTest do
   end
 
   test "admits and delivers a message to an online receiver" do
+    {:ok, pubsub} =
+      Redix.PubSub.start_link(Application.fetch_env!(:chatchat_tcp, :redis_url))
+
+    {:ok, subscription} =
+      Redix.PubSub.subscribe(pubsub, "chatchat:admin:messages", self())
+
     sender = connect_and_authenticate(48)
     receiver = connect_and_authenticate(49)
 
@@ -112,6 +118,15 @@ defmodule ChatchatTcpTest do
               "request_id" => "request-1",
               "message_id" => message_id
             }} = recv_json(sender)
+
+    assert_receive {:redix_pubsub, ^pubsub, ^subscription, :message,
+                    %{channel: "chatchat:admin:messages", payload: event_payload}}
+
+    assert %{
+             "message_id" => ^message_id,
+             "sender_id" => 48,
+             "recipient_id" => 49
+           } = Jason.decode!(event_payload)
 
     ack = %{type: "message_accepted_ack", request_id: "request-1", message_id: message_id}
     :ok = :gen_tcp.send(sender, Jason.encode!(ack) <> "\n")

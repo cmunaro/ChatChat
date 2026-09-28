@@ -47,7 +47,87 @@ defmodule ChatchatWeb.Admin.OverviewLiveTest do
     assert body =~ "18"
     assert body =~ "Messages in delivery DB"
     assert body =~ "7"
+    assert body =~ ~s(id="live-messages")
+    assert body =~ "Live messages"
+    assert body =~ ~s(aria-expanded="false")
     assert body =~ "User search"
+  end
+
+  test "keeps the live-message collapse state in the LiveView socket" do
+    socket = %Phoenix.LiveView.Socket{assigns: %{__changed__: %{}, messages_open: false}}
+
+    assert {:noreply, opened} =
+             ChatchatWeb.Admin.OverviewLive.handle_event("toggle_messages", %{}, socket)
+
+    assert opened.assigns.messages_open
+    assert {:noreply, refreshed} = ChatchatWeb.Admin.OverviewLive.handle_info(:refresh, opened)
+    assert refreshed.assigns.messages_open
+  end
+
+  test "groups both message directions in the same client pair" do
+    socket = %Phoenix.LiveView.Socket{assigns: %{__changed__: %{}, message_edges: %{}}}
+
+    assert {:noreply, first} =
+             ChatchatWeb.Admin.OverviewLive.handle_info(
+               {:message_admitted, %{message_id: "first", sender_id: 10, recipient_id: 11}},
+               socket
+             )
+
+    assert {:noreply, second} =
+             ChatchatWeb.Admin.OverviewLive.handle_info(
+               {:message_admitted, %{message_id: "second", sender_id: 11, recipient_id: 10}},
+               first
+             )
+
+    assert %{
+             {10, 11} => %{
+               directions: %{
+                 {10, 11} => %{count: 1},
+                 {11, 10} => %{count: 1}
+               }
+             }
+           } = second.assigns.message_edges
+  end
+
+  test "merges directional panels already held by a running LiveView" do
+    socket = %Phoenix.LiveView.Socket{
+      assigns: %{
+        __changed__: %{},
+        message_edges: %{
+          {12, 13} => %{count: 2, last_seen: 1, message_id: "forward"},
+          {13, 12} => %{count: 1, last_seen: 2, message_id: "reverse"}
+        }
+      }
+    }
+
+    assert {:noreply, refreshed} = ChatchatWeb.Admin.OverviewLive.handle_info(:refresh, socket)
+
+    assert %{
+             {12, 13} => %{
+               directions: %{
+                 {12, 13} => %{count: 2},
+                 {13, 12} => %{count: 1}
+               }
+             }
+           } = refreshed.assigns.message_edges
+  end
+
+  test "broadcasts valid Redis message events to admin sessions" do
+    Phoenix.PubSub.subscribe(ChatchatWeb.PubSub, "admin:messages")
+
+    payload =
+      Jason.encode!(%{message_id: Ecto.UUID.generate(), sender_id: 12, recipient_id: 13})
+
+    redis_message =
+      {:redix_pubsub, :pubsub, :subscription, :message,
+       %{channel: "chatchat:admin:messages", payload: payload}}
+
+    state = %{pubsub: :pubsub, subscription: :subscription}
+
+    assert {:noreply, ^state} =
+             ChatchatWeb.Admin.MessageStream.handle_info(redis_message, state)
+
+    assert_receive {:message_admitted, %{sender_id: 12, recipient_id: 13}}
   end
 
   test "GET /admin redirects an anonymous visitor to the login page" do

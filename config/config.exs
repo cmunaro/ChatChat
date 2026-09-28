@@ -43,7 +43,8 @@ config :chatchat_web, ChatchatWeb.Endpoint,
 
 config :chatchat_web,
   prometheus_url: "http://localhost:9090",
-  prometheus_tcp_job: "chatchat_tcp_local"
+  prometheus_tcp_job: "chatchat_tcp_local",
+  redis_url: "redis://localhost:6379"
 
 config :phoenix, :json_library, Jason
 
