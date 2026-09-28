@@ -5,7 +5,7 @@ defmodule ChatchatClient.Socket do
   def connect(token) do
     case :gen_tcp.connect(host(), port(), [:binary, active: false, packet: :line], timeout()) do
       {:ok, socket} -> authenticate(socket, token)
-      error -> error
+      {:error, reason} -> {:error, {:connect, reason}}
     end
   end
 
@@ -60,8 +60,14 @@ defmodule ChatchatClient.Socket do
         {:ok, socket, user_id}
       end
 
-    if match?({:error, _reason}, result), do: close(socket)
-    result
+    case result do
+      {:error, reason} ->
+        close(socket)
+        {:error, {:authenticate, reason}}
+
+      success ->
+        success
+    end
   end
 
   defp receive_response(socket, response_matcher, deadline) do

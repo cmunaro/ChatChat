@@ -84,8 +84,8 @@ defmodule ChatchatClient.SimulatedClient do
 
     register_client(state, client)
   rescue
-    _error ->
-      send(state.simulator, {:client_start_failed, state.index})
+    error ->
+      send(state.simulator, {:client_start_failed, state.index, Exception.message(error)})
       Process.send_after(self(), :start_client, @restart_interval)
       {:noreply, state}
   end

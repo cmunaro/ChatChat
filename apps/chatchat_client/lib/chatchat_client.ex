@@ -89,7 +89,7 @@ defmodule ChatchatClient do
   def init(state) do
     state = Map.merge(%{preprovisioned: false}, state)
     state = Map.merge(state, %{ping_timer: nil, reconnect_timer: nil})
-    {:ok, schedule_ping(state)}
+    {:ok, schedule_initial_ping(state)}
   end
 
   @impl true
@@ -242,6 +242,10 @@ defmodule ChatchatClient do
   end
 
   defp schedule_ping(state), do: state
+
+  defp schedule_initial_ping(%{ping_timer: nil} = state) do
+    %{state | ping_timer: Process.send_after(self(), :ping, :rand.uniform(@ping_interval))}
+  end
 
   defp schedule_reconnect(%{reconnect_timer: nil} = state) do
     %{state | reconnect_timer: Process.send_after(self(), :reconnect, @reconnect_interval)}
