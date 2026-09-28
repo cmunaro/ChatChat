@@ -21,7 +21,8 @@ if config_env() == :prod do
     if release_name == "chatchat_web" do
       config :chatchat_web,
         prometheus_url: System.get_env("PROMETHEUS_URL", "http://prometheus:9090"),
-        prometheus_tcp_job: System.get_env("PROMETHEUS_TCP_JOB", "chatchat_tcp")
+        prometheus_tcp_job: System.get_env("PROMETHEUS_TCP_JOB", "chatchat_tcp"),
+        redis_url: System.get_env("REDIS_URL", "redis://redis:6379")
 
       config :chatchat_web, ChatchatWeb.Endpoint,
         http: [ip: {0, 0, 0, 0}, port: String.to_integer(System.get_env("PORT", "4000"))],

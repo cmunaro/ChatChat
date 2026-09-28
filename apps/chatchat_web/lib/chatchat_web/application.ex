@@ -10,6 +10,7 @@ defmodule ChatchatWeb.Application do
     children = [
       {Phoenix.PubSub, name: ChatchatWeb.PubSub},
       {Finch, name: ChatchatWeb.Finch},
+      ChatchatWeb.Admin.MessageStream,
       ChatchatWeb.PromEx,
       ChatchatWeb.Endpoint
     ]

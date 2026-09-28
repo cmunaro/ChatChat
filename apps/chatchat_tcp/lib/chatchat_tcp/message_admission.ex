@@ -45,16 +45,26 @@ defmodule ChatchatTcp.MessageAdmission do
         "message" => message
       })
 
-    command = [
-      "SET",
-      RedisKeys.pending(sender_id, request_id),
-      admission,
-      "PX",
-      config(:pending_ttl)
+    event =
+      Jason.encode!(%{
+        "message_id" => message_id,
+        "sender_id" => sender_id,
+        "recipient_id" => recipient_id
+      })
+
+    commands = [
+      [
+        "SET",
+        RedisKeys.pending(sender_id, request_id),
+        admission,
+        "PX",
+        config(:pending_ttl)
+      ],
+      ["PUBLISH", RedisKeys.admin_messages_channel(), event]
     ]
 
-    case Redix.command(@redis, command) do
-      {:ok, "OK"} ->
+    case Redix.pipeline(@redis, commands) do
+      {:ok, ["OK", _subscriber_count]} ->
         :telemetry.execute([:chatchat, :message, :admitted], %{count: 1}, %{})
         {:ok, message_id}
 

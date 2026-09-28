@@ -35,7 +35,8 @@ defmodule ChatchatWeb.MixProject do
       {:phoenix, "~> 1.8"},
       {:phoenix_html, "~> 4.0"},
       {:phoenix_live_view, "~> 1.2"},
-      {:prom_ex, "~> 1.12"}
+      {:prom_ex, "~> 1.12"},
+      {:redix, "~> 1.5"}
     ]
   end
 end

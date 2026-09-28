@@ -50,11 +50,14 @@ services:
       DATABASE_URL: "ecto://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db/${POSTGRES_DB}"
       SECRET_KEY_BASE: "1234567890123456789012345678901234567890123456789012345678901234"
       PROMETHEUS_URL: "http://prometheus:9090"
+      REDIS_URL: "redis://redis:6379"
       PORT: "4000"
     ports:
       - "4000:4000"
     depends_on:
       db:
+        condition: service_healthy
+      redis:
         condition: service_healthy
       prometheus:
         condition: service_started
