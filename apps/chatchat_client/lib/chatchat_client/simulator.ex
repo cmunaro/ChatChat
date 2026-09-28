@@ -49,6 +49,7 @@ defmodule ChatchatClient.Simulator do
       prefix: prefix,
       started: 0,
       startup_failures: 0,
+      startup_failures_by_reason: %{},
       activity_started: false
     }
 
@@ -66,6 +67,7 @@ defmodule ChatchatClient.Simulator do
       running_wrappers: children.active,
       ready_clients: :ets.info(state.clients, :size),
       startup_failures: state.startup_failures,
+      startup_failures_by_reason: state.startup_failures_by_reason,
       phase: phase(state)
     }
 
@@ -103,8 +105,15 @@ defmodule ChatchatClient.Simulator do
     {:noreply, state}
   end
 
-  def handle_info({:client_start_failed, _index}, state) do
-    {:noreply, %{state | startup_failures: state.startup_failures + 1}}
+  def handle_info({:client_start_failed, _index, reason}, state) do
+    failures_by_reason = Map.update(state.startup_failures_by_reason, reason, 1, &(&1 + 1))
+
+    {:noreply,
+     %{
+       state
+       | startup_failures: state.startup_failures + 1,
+         startup_failures_by_reason: failures_by_reason
+     }}
   end
 
   def handle_info(:start_next, state) do

@@ -86,7 +86,7 @@ services:
       - loadtest
 
   haproxy:
-    image: haproxy:3.2.23-alpine
+    image: haproxy:3.3.15-alpine
     restart: unless-stopped
     ports:
       - "4040:4040"
@@ -97,6 +97,8 @@ services:
       nofile:
         soft: 1048576
         hard: 1048576
+    sysctls:
+      net.ipv4.ip_local_port_range: "1024 65535"
     depends_on:
       - tcp
     networks:
@@ -107,7 +109,7 @@ services:
     image: chatchat-web
     command:
       - eval
-      - "{:ok, _} = Application.ensure_all_started(:chatchat_broker); ChatchatBroker.LoadTestProvisioner.run(500000)"
+      - "{:ok, _} = Application.ensure_all_started(:chatchat_broker); ChatchatBroker.LoadTestProvisioner.run(150000)"
     environment:
       DATABASE_URL: "ecto://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db/${POSTGRES_DB}"
       SECRET_KEY_BASE: "1234567890123456789012345678901234567890123456789012345678901234"
@@ -130,10 +132,10 @@ services:
       TCP_HOST: haproxy
       TCP_PORT: "4040"
       SECRET_KEY_BASE: "1234567890123456789012345678901234567890123456789012345678901234"
-      CLIENTS_PER_LOADGEN: "50000"
+      CLIENTS_PER_LOADGEN: "15000"
       LOADGEN_PARTICIPANTS: "10"
       LOAD_TEST_FIRST_USER_ID: "1500000001"
-      LOAD_TEST_RUN_ID: "500k-20260923-2"
+      LOAD_TEST_RUN_ID: "${LOAD_TEST_RUN_ID:-150k}"
       CLIENT_CREATION_CONCURRENCY: "40"
       CLIENT_RAMP_INTERVAL_MS: "5"
       CLIENT_REQUEST_TIMEOUT: "60000"
