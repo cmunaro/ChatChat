@@ -27,6 +27,15 @@ defmodule ChatchatTcp.Telemetry do
     )
   end
 
+  @spec delivery_routing(non_neg_integer(), non_neg_integer()) :: :ok
+  def delivery_routing(published, stale) do
+    :telemetry.execute(
+      [:chatchat, :message, :delivery, :routing],
+      %{routed: published, offline: if(published == 0, do: 1, else: 0), stale: stale},
+      %{}
+    )
+  end
+
   @spec persistence_stop(integer(), non_neg_integer()) :: :ok
   def persistence_stop(started_at, persisted) do
     :telemetry.execute(

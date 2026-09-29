@@ -1,9 +1,38 @@
 defmodule ChatchatTcp.Presence do
+  alias ChatchatTcp.{PresenceRouting, RedisKeys}
   alias ChatchatTcp.Presence.Registry, as: PresenceRegistry
 
-  @spec register(integer()) :: {:error, {:already_registered, pid()}} | {:ok, pid()}
+  @redis ChatchatTcp.Redis
+
+  @spec register(integer()) :: {:ok, pid()} | {:error, term()}
   def register(user_id) when is_integer(user_id) do
-    Registry.register(PresenceRegistry, user_id, nil)
+    node_id = PresenceRouting.node_id()
+    heartbeat_ttl = PresenceRouting.heartbeat_ttl()
+
+    commands = [
+      ["SADD", RedisKeys.presence(user_id), node_id],
+      ["SET", RedisKeys.presence_node(node_id), "1", "PX", heartbeat_ttl]
+    ]
+
+    with {:ok, owner} <- Registry.register(PresenceRegistry, user_id, nil),
+         {:ok, [_added, "OK"]} <- Redix.pipeline(@redis, commands) do
+      {:ok, owner}
+    else
+      error ->
+        Registry.unregister(PresenceRegistry, user_id)
+        error
+    end
+  end
+
+  @spec unregister(integer()) :: :ok
+  def unregister(user_id) when is_integer(user_id) do
+    Registry.unregister(PresenceRegistry, user_id)
+
+    if not online?(user_id) do
+      Redix.command(@redis, ["SREM", RedisKeys.presence(user_id), PresenceRouting.node_id()])
+    end
+
+    :ok
   end
 
   @spec online?(integer()) :: boolean()

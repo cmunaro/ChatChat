@@ -37,9 +37,19 @@ defmodule ChatchatTcp.Handler do
     Socket.close(socket)
   end
 
-  def handle_timeout(socket, _state) do
+  def handle_timeout(socket, state) do
+    unregister(state)
     Socket.close(socket)
   end
+
+  @impl ThousandIsland.Handler
+  def handle_close(_socket, state), do: unregister(state)
+
+  @impl ThousandIsland.Handler
+  def handle_error(_reason, _socket, state), do: unregister(state)
+
+  @impl ThousandIsland.Handler
+  def handle_shutdown(_socket, state), do: unregister(state)
 
   defp process_frames(buffer, socket, state) do
     case :binary.split(buffer, "\n") do
@@ -109,6 +119,9 @@ defmodule ChatchatTcp.Handler do
   end
 
   defp handle_request(_socket, {:error, reason}), do: {:error, reason}
+
+  defp unregister(%{user_id: user_id}) when is_integer(user_id), do: Presence.unregister(user_id)
+  defp unregister(_state), do: :ok
 
   @impl GenServer
   def handle_info({:message, message_id, from_user_id, message}, {socket, state}) do

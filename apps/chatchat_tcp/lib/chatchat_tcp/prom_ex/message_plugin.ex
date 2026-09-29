@@ -23,6 +23,24 @@ defmodule ChatchatTcp.PromEx.MessagePlugin do
           measurement: :count,
           description: "Number of accepted TCP connections."
         ),
+        sum(
+          [:chatchat, :message, :delivery, :routing, :routed, :total],
+          event_name: [:chatchat, :message, :delivery, :routing],
+          measurement: :routed,
+          description: "Number of node-specific delivery notifications published."
+        ),
+        sum(
+          [:chatchat, :message, :delivery, :routing, :offline, :total],
+          event_name: [:chatchat, :message, :delivery, :routing],
+          measurement: :offline,
+          description: "Number of admitted messages whose receiver had no live owner node."
+        ),
+        sum(
+          [:chatchat, :message, :delivery, :routing, :stale, :total],
+          event_name: [:chatchat, :message, :delivery, :routing],
+          measurement: :stale,
+          description: "Number of expired node owners removed while routing messages."
+        ),
         counter(
           [:chatchat, :messages, :delivered, :total],
           event_name: [:chatchat, :message, :delivery, :stop],
