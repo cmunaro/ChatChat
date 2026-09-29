@@ -64,7 +64,7 @@ defmodule ChatchatTcp.Handler do
          {:ok, user_id} <- ChatchatAuth.verify(token),
          {:ok, _} <- Presence.register(user_id) do
       send_json(socket, %{type: "authenticated", user_id: user_id})
-      Delivery.wake(user_id)
+      Delivery.wake(user_id, :recovery)
       {:continue, %{state | user_id: user_id}}
     else
       _ -> close_with_error(socket, state, "unauthorized")
