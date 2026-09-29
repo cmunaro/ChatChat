@@ -20,12 +20,18 @@ defmodule ChatchatTcp.MessageDelivery do
     RedisScript.load(@redis, @acknowledgement_script, @acknowledgement_script_sha)
   end
 
-  @spec deliver_pending(pos_integer()) :: :ok
-  def deliver_pending(receiver_id) do
+  @spec deliver_pending(pos_integer(), ChatchatTcp.Delivery.delivery_kind()) :: :ok
+  def deliver_pending(receiver_id, :recovery) do
     if Presence.online?(receiver_id) do
       deliver_from_postgres(receiver_id)
       deliver_from_redis(receiver_id)
     end
+
+    :ok
+  end
+
+  def deliver_pending(receiver_id, :realtime) do
+    if Presence.online?(receiver_id), do: deliver_from_redis(receiver_id)
 
     :ok
   end

@@ -18,9 +18,19 @@ defmodule ChatchatTcp.MixProject do
   # Run "mix help compile.app" to learn about applications.
   def application do
     [
-      extra_applications: [:logger],
+      extra_applications: extra_applications(),
       mod: {ChatchatTcp.Application, []}
     ]
+  end
+
+  defp extra_applications do
+    applications = [:logger]
+
+    if Mix.env() == :dev do
+      [:observer, :wx | applications]
+    else
+      applications
+    end
   end
 
   # Run "mix help deps" to learn about dependencies.
