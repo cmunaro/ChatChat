@@ -11,5 +11,19 @@ redis.call('SET', message_key, pending)
 redis.call('SADD', receiver_set, ARGV[1]) -- add message id to chatchat:sending:<receiver_id>
 redis.call('ZADD', "chatchat:sending_deadlines", ARGV[2], ARGV[1]) -- add message id to sending_deadlines
 redis.call('DEL', KEYS[1]) -- delete chatchat:pending:<sender_id>:<request_id>
-redis.call('PUBLISH', 'chatchat:delivery', message.recipient_id) -- notify delivery worker
-return 1
+local presence_key = 'chatchat:presence:' .. message.recipient_id
+local owners = redis.call('SMEMBERS', presence_key)
+local published = 0
+local stale = 0
+
+for _, node_id in ipairs(owners) do
+  if redis.call('EXISTS', 'chatchat:presence_node:' .. node_id) == 1 then
+    redis.call('PUBLISH', 'chatchat:delivery:' .. node_id, message.recipient_id)
+    published = published + 1
+  else
+    redis.call('SREM', presence_key, node_id)
+    stale = stale + 1
+  end
+end
+
+return {1, published, stale}

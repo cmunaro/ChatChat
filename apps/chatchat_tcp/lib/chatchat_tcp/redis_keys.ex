@@ -26,4 +26,13 @@ defmodule ChatchatTcp.RedisKeys do
 
   @spec admin_messages_channel() :: binary()
   def admin_messages_channel, do: @admin_messages_channel
+
+  @spec presence(pos_integer()) :: binary()
+  def presence(user_id), do: "chatchat:presence:#{user_id}"
+
+  @spec presence_node(binary()) :: binary()
+  def presence_node(node_id), do: "chatchat:presence_node:#{node_id}"
+
+  @spec delivery_channel(binary()) :: binary()
+  def delivery_channel(node_id), do: "chatchat:delivery:#{node_id}"
 end

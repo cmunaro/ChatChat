@@ -11,6 +11,7 @@ defmodule ChatchatTcp.Application do
       [
         {Registry, keys: :duplicate, name: ChatchatTcp.Presence.Registry},
         {Redix, redis_options()},
+        ChatchatTcp.PresenceRouting,
         ChatchatTcp.MessageAdmission,
         {Task.Supervisor, name: ChatchatTcp.Delivery.TaskSupervisor},
         ChatchatTcp.Delivery,

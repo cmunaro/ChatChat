@@ -21,10 +21,8 @@ defmodule ChatchatTcp.Delivery do
   receivers up to the configured concurrency limit.
   """
 
-  alias ChatchatTcp.MessageDelivery
+  alias ChatchatTcp.{MessageDelivery, PresenceRouting}
   alias Ecto.UUID
-
-  @channel "chatchat:delivery"
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(_options), do: GenServer.start_link(__MODULE__, nil, name: __MODULE__)
@@ -45,6 +43,8 @@ defmodule ChatchatTcp.Delivery do
 
   @impl GenServer
   def init(nil) do
+    channel = PresenceRouting.delivery_channel()
+
     max_concurrency =
       :chatchat_tcp
       |> Application.fetch_env!(:delivery)
@@ -53,11 +53,12 @@ defmodule ChatchatTcp.Delivery do
     with :ok <- MessageDelivery.load_script(),
          {:ok, pubsub} <-
            Redix.PubSub.start_link(Application.fetch_env!(:chatchat_tcp, :redis_url)),
-         {:ok, subscription} <- Redix.PubSub.subscribe(pubsub, @channel, self()) do
+         {:ok, subscription} <- Redix.PubSub.subscribe(pubsub, channel, self()) do
       {:ok,
        %{
          pubsub: pubsub,
          subscription: subscription,
+         channel: channel,
          active: MapSet.new(),
          pending: %{},
          max_concurrency: max_concurrency
@@ -84,8 +85,8 @@ defmodule ChatchatTcp.Delivery do
 
   @impl GenServer
   def handle_info(
-        {:redix_pubsub, pubsub, subscription, :message, %{channel: @channel, payload: payload}},
-        %{pubsub: pubsub, subscription: subscription} = state
+        {:redix_pubsub, pubsub, subscription, :message, %{channel: channel, payload: payload}},
+        %{pubsub: pubsub, subscription: subscription, channel: channel} = state
       ) do
     case Integer.parse(payload) do
       {receiver_id, ""} -> {:noreply, schedule(receiver_id, :realtime, state)}

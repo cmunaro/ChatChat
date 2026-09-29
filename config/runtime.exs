@@ -33,6 +33,12 @@ if config_env() == :prod do
   if release_name == "chatchat_tcp" do
     config :chatchat_tcp,
       redis_url: System.get_env("REDIS_URL", "redis://localhost:6379"),
+      presence_routing: [
+        node_id: System.get_env("TCP_NODE_ID", System.fetch_env!("HOSTNAME")),
+        heartbeat_ttl: String.to_integer(System.get_env("PRESENCE_HEARTBEAT_TTL", "30000")),
+        heartbeat_interval:
+          String.to_integer(System.get_env("PRESENCE_HEARTBEAT_INTERVAL", "10000"))
+      ],
       metrics_server: [
         ip: {0, 0, 0, 0},
         port: String.to_integer(System.get_env("METRICS_PORT", "9568"))

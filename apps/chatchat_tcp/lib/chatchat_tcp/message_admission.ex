@@ -95,7 +95,8 @@ defmodule ChatchatTcp.MessageAdmission do
     ]
 
     case RedisScript.command(conn, @confirmation_script, @confirmation_script_sha, command) do
-      {:ok, 1} ->
+      {:ok, [1, published, stale]} ->
+        ChatchatTcp.Telemetry.delivery_routing(published, stale)
         {:ok, message_id}
 
       {:ok, 0} ->

@@ -21,8 +21,24 @@ defmodule ChatchatTcpTest do
     assert response == %{"type" => "authenticated", "user_id" => user_id}
     assert Presence.online?(user_id)
 
+    assert {:ok, 1} =
+             Redix.command(ChatchatTcp.Redis, [
+               "SISMEMBER",
+               "chatchat:presence:#{user_id}",
+               ChatchatTcp.PresenceRouting.node_id()
+             ])
+
     :ok = :gen_tcp.close(socket)
     assert_eventually(fn -> not Presence.online?(user_id) end)
+
+    assert_eventually(fn ->
+      {:ok, 0} ==
+        Redix.command(ChatchatTcp.Redis, [
+          "SISMEMBER",
+          "chatchat:presence:#{user_id}",
+          ChatchatTcp.PresenceRouting.node_id()
+        ])
+    end)
   end
 
   test "supports an authentication frame split across TCP packets" do
