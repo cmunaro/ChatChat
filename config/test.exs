@@ -8,6 +8,7 @@ config :chatchat_tcp,
   redis_url: System.get_env("TEST_REDIS_URL", "redis://localhost:6379/15"),
   delivery: [max_concurrency: 8, batch_size: 128],
   admission: [
+    max_outstanding: 100_000,
     pending_ttl: 100,
     delivery_window: 20_000,
     persistence_batch_size: 50,

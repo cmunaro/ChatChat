@@ -10,6 +10,8 @@ local receiver_set = 'chatchat:sending:' .. message.recipient_id -- chatchat:sen
 redis.call('SET', message_key, pending)
 redis.call('SADD', receiver_set, ARGV[1]) -- add message id to chatchat:sending:<receiver_id>
 redis.call('ZADD', "chatchat:sending_deadlines", ARGV[2], ARGV[1]) -- add message id to sending_deadlines
+redis.call('ZREM', 'chatchat:admission_reservations', KEYS[1])
+redis.call('ZADD', 'chatchat:outstanding', ARGV[2], ARGV[1])
 redis.call('DEL', KEYS[1]) -- delete chatchat:pending:<sender_id>:<request_id>
 local presence_key = 'chatchat:presence:' .. message.recipient_id
 local owners = redis.call('SMEMBERS', presence_key)

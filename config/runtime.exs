@@ -48,6 +48,7 @@ if config_env() == :prod do
         batch_size: String.to_integer(System.get_env("DELIVERY_BATCH_SIZE", "128"))
       ],
       admission: [
+        max_outstanding: String.to_integer(System.get_env("MAX_OUTSTANDING_MESSAGES", "100000")),
         pending_ttl: String.to_integer(System.get_env("ADMISSION_TTL", "60000")),
         delivery_window: String.to_integer(System.get_env("DELIVERY_WINDOW", "20000")),
         persistence_batch_size:
