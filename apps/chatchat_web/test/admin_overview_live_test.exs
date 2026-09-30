@@ -39,6 +39,8 @@ defmodule ChatchatWeb.Admin.OverviewLiveTest do
     body = authenticated_conn() |> get("/admin") |> html_response(200)
 
     assert body =~ "System overview"
+    assert body =~ ~s(href="/admin/swaggerui")
+    assert body =~ ~s(href="/admin/tcp-protocol")
     assert body =~ "Registered users"
     assert body =~ "125"
     assert body =~ "Online users"
@@ -134,6 +136,23 @@ defmodule ChatchatWeb.Admin.OverviewLiveTest do
     conn = get(build_conn(), "/admin")
 
     assert redirected_to(conn) == "/admin/login"
+  end
+
+  test "TCP protocol documentation requires an administrator session" do
+    assert redirected_to(get(build_conn(), "/admin/tcp-protocol")) == "/admin/login"
+  end
+
+  test "TCP protocol documentation describes the wire frames and acknowledgements" do
+    body = authenticated_conn() |> get("/admin/tcp-protocol") |> html_response(200)
+
+    assert body =~ "<title>ChatChat Admin</title>"
+    assert body =~ ".protocol-frame"
+    assert body =~ "TCP protocol"
+    assert body =~ "Newline-delimited JSON"
+    assert body =~ "send_message"
+    assert body =~ "message_accepted_ack"
+    assert body =~ "message_delivered_ack"
+    assert body =~ ~s(&quot;type&quot;: &quot;authenticate&quot;)
   end
 
   test "a regular user id in the session cannot access the admin" do

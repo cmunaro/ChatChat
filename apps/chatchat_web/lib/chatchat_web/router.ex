@@ -22,6 +22,10 @@ defmodule ChatchatWeb.Router do
     plug(ChatchatWeb.Admin.Auth)
   end
 
+  pipeline :api_spec do
+    plug(OpenApiSpex.Plug.PutApiSpec, module: ChatchatWeb.ApiSpec)
+  end
+
   scope "/api", ChatchatWeb do
     pipe_through(:api)
 
@@ -35,18 +39,18 @@ defmodule ChatchatWeb.Router do
     get("/user/search", UserController, :search)
   end
 
-  scope "/" do
-    pipe_through(:api)
-
-    get("/openapi", OpenApiSpex.Plug.RenderSpec, [])
-    get("/swaggerui", OpenApiSpex.Plug.SwaggerUI, path: "/openapi")
-  end
-
   scope "/admin", ChatchatWeb.Admin do
     pipe_through(:browser)
 
     get("/login", SessionController, :new)
     post("/login", SessionController, :create)
+  end
+
+  scope "/admin" do
+    pipe_through([:browser, :admin_authenticated, :api_spec])
+
+    get("/openapi", OpenApiSpex.Plug.RenderSpec, [])
+    get("/swaggerui", OpenApiSpex.Plug.SwaggerUI, path: "/admin/openapi")
   end
 
   scope "/admin", ChatchatWeb.Admin do
@@ -56,6 +60,7 @@ defmodule ChatchatWeb.Router do
 
     live_session :admin, on_mount: [{ChatchatWeb.Admin.Auth, :ensure_authenticated}] do
       live("/", OverviewLive, :index)
+      live("/tcp-protocol", TcpProtocolLive, :index)
     end
   end
 end

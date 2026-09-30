@@ -81,9 +81,23 @@ defmodule ChatchatWeb.Layouts do
           th, td { padding: 13px 12px; border-bottom: 1px solid #253143; text-align: left; }
           th { color: #68778d; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; }
           td { color: #cbd5e1; font-size: 14px; }
+          .protocol-intro { margin-bottom: 24px; padding: 20px 22px; border: 1px solid #253143; border-radius: 14px; background: rgba(13,20,31,.76); color: #a7b3c4; line-height: 1.6; }
+          .protocol-intro code { color: #6ee7b7; }
+          .protocol-group { margin-top: 26px; }
+          .protocol-group h2 { margin: 0 0 12px; font-size: 22px; }
+          .protocol-frame { margin-bottom: 10px; border: 1px solid #253143; border-radius: 12px; overflow: hidden; background: rgba(13,20,31,.82); }
+          .protocol-frame summary { display: grid; grid-template-columns: 150px 130px 1fr; align-items: center; gap: 16px; padding: 17px 20px; cursor: pointer; list-style: none; }
+          .protocol-frame summary::-webkit-details-marker { display: none; }
+          .protocol-frame summary::after { content: '\203A'; justify-self: end; color: #6ee7b7; font-size: 26px; transition: transform .15s ease; }
+          .protocol-frame[open] summary::after { transform: rotate(90deg); }
+          .protocol-name { color: #edf2f7; font-weight: 750; }
+          .protocol-direction { width: fit-content; padding: 4px 8px; border-radius: 999px; background: #19334d; color: #93c5fd; font-size: 11px; font-weight: 750; text-transform: uppercase; }
+          .protocol-purpose { color: #91a0b5; font-size: 13px; }
+          .protocol-body { padding: 0 20px 20px; border-top: 1px solid #253143; }
+          .protocol-body pre { margin: 18px 0 0; padding: 16px; overflow-x: auto; border-radius: 10px; background: #070b11; color: #a7f3d0; font-size: 13px; line-height: 1.55; }
           .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
           @media (max-width: 900px) { .metric-grid { grid-template-columns: repeat(2, 1fr); } }
-          @media (max-width: 560px) { .admin-shell { width: min(100% - 24px, 1180px); padding: 40px 0; } .page-header, .section-heading { align-items: start; flex-direction: column; } .header-actions { align-items: start; flex-direction: column; } .metric-grid { grid-template-columns: 1fr; } .live-messages-summary { align-items: start; flex-direction: column; } .message-graph { min-height: 300px; } .message-flows { padding: 16px; grid-template-columns: 1fr; } .message-flow { grid-template-columns: 74px minmax(70px, 1fr) 74px; padding: 14px; } .client-node { width: 70px; height: 70px; } .search-form { flex-direction: column; } }
+          @media (max-width: 560px) { .admin-shell { width: min(100% - 24px, 1180px); padding: 40px 0; } .page-header, .section-heading { align-items: start; flex-direction: column; } .header-actions { align-items: start; flex-direction: column; } .metric-grid { grid-template-columns: 1fr; } .live-messages-summary { align-items: start; flex-direction: column; } .message-graph { min-height: 300px; } .message-flows { padding: 16px; grid-template-columns: 1fr; } .message-flow { grid-template-columns: 74px minmax(70px, 1fr) 74px; padding: 14px; } .client-node { width: 70px; height: 70px; } .search-form { flex-direction: column; } .protocol-frame summary { grid-template-columns: 1fr auto; } .protocol-purpose { grid-column: 1 / -1; } }
         </style>
       </head>
       <body>
