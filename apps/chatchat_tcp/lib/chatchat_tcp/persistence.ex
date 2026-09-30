@@ -19,6 +19,9 @@ defmodule ChatchatTcp.Persistence do
   end
 
   @impl GenServer
+  def handle_info({reference, _late_reply}, state) when is_reference(reference),
+    do: {:noreply, state}
+
   def handle_info(:persist, state) do
     started_at = System.monotonic_time()
     persisted = MessagePersistence.persist_batch()

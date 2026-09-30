@@ -3,7 +3,7 @@ defmodule ChatchatTcp.MessageDelivery do
   alias ChatchatTcp.{Presence, RedisKeys, RedisScript}
   alias Ecto.UUID
 
-  @redis ChatchatTcp.Redis
+  @redis ChatchatTcp.Redis.Delivery
   @acknowledgement_script_path Application.app_dir(
                                  :chatchat_tcp,
                                  "priv/redis/acknowledge_message.lua"
@@ -20,36 +20,33 @@ defmodule ChatchatTcp.MessageDelivery do
     RedisScript.load(@redis, @acknowledgement_script, @acknowledgement_script_sha)
   end
 
-  @spec deliver_pending(pos_integer(), ChatchatTcp.Delivery.delivery_kind()) :: :ok
-  def deliver_pending(receiver_id, :recovery) do
+  def deliver_pending(receiver_id, kind, cursor \\ nil) do
     if Presence.online?(receiver_id) do
-      deliver_from_postgres(receiver_id)
-      deliver_from_redis(receiver_id)
-    end
-
-    :ok
-  end
-
-  def deliver_pending(receiver_id, :realtime) do
-    if Presence.online?(receiver_id), do: deliver_from_redis(receiver_id)
-
-    :ok
-  end
-
-  defp deliver_from_postgres(receiver_id) do
-    try do
-      receiver_id
-      |> MessagesStore.for_receiver()
-      |> Enum.each(fn message ->
-        deliver(receiver_id, message.message_id, message.sender_id, message.payload, :postgres)
-      end)
-    rescue
-      _error -> ChatchatTcp.Telemetry.delivery_failure(:postgres, :postgres_unavailable)
+      limit = Application.fetch_env!(:chatchat_tcp, :delivery) |> Keyword.fetch!(:batch_size)
+      next = if kind == :recovery, do: deliver_from_postgres(receiver_id, cursor, limit)
+      %{cursor: next, retry: deliver_from_redis(receiver_id, limit)}
+    else
+      %{cursor: nil, retry: false}
     end
   end
 
-  defp deliver_from_redis(receiver_id) do
-    with {:ok, message_ids} <- Redix.command(@redis, ["SMEMBERS", RedisKeys.sending(receiver_id)]),
+  defp deliver_from_postgres(receiver_id, cursor, limit) do
+    messages = MessagesStore.for_receiver_page(receiver_id, cursor, limit)
+
+    Enum.each(messages, fn message ->
+      deliver(receiver_id, message.message_id, message.sender_id, message.payload, :postgres)
+    end)
+
+    if length(messages) == limit, do: List.last(messages).message_id
+  rescue
+    _error ->
+      ChatchatTcp.Telemetry.delivery_failure(:postgres, :postgres_unavailable)
+      nil
+  end
+
+  defp deliver_from_redis(receiver_id, limit) do
+    with {:ok, message_ids} <-
+           Redix.command(@redis, ["SRANDMEMBER", RedisKeys.sending(receiver_id), limit]),
          commands = Enum.map(message_ids, &["GET", RedisKeys.message(&1)]),
          {:ok, messages} <- pipeline(commands) do
       messages
@@ -61,8 +58,12 @@ defmodule ChatchatTcp.MessageDelivery do
         _missing ->
           :ok
       end)
+
+      message_ids != []
     else
-      _error -> ChatchatTcp.Telemetry.delivery_failure(:redis, :redis_unavailable)
+      _error ->
+        ChatchatTcp.Telemetry.delivery_failure(:redis, :redis_unavailable)
+        true
     end
   end
 

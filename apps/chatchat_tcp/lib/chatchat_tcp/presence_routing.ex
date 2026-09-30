@@ -50,6 +50,9 @@ defmodule ChatchatTcp.PresenceRouting do
   end
 
   @impl GenServer
+  def handle_info({reference, _late_reply}, state) when is_reference(reference),
+    do: {:noreply, state}
+
   def handle_info(:heartbeat, state) do
     _ = refresh_heartbeat(state.node_id, state.ttl)
     schedule_heartbeat(state.interval)

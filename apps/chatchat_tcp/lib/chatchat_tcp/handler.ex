@@ -134,4 +134,7 @@ defmodule ChatchatTcp.Handler do
 
     {:noreply, {socket, state}}
   end
+
+  def handle_info({reference, _late_reply}, {socket, state}) when is_reference(reference),
+    do: {:noreply, {socket, state}}
 end

@@ -22,6 +22,21 @@ defmodule ChatchatBroker.Storage.MessagesStore do
     |> Repo.all()
   end
 
+  def for_receiver_page(receiver_id, after_id, limit) do
+    query =
+      from message in Message,
+        where: message.receiver_id == ^receiver_id,
+        order_by: [asc: message.message_id],
+        limit: ^limit
+
+    query =
+      if after_id,
+        do: from(message in query, where: message.message_id > ^after_id),
+        else: query
+
+    Repo.all(query)
+  end
+
   @spec count_undelivered() :: non_neg_integer()
   def count_undelivered, do: Repo.aggregate(Message, :count, :message_id)
 

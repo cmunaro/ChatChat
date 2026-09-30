@@ -4,7 +4,7 @@ defmodule ChatchatTcp.MessagePersistence do
   alias ChatchatBroker.Storage.MessagesStore
   alias ChatchatTcp.{RedisKeys, RedisScript}
 
-  @redis ChatchatTcp.Redis
+  @redis ChatchatTcp.Redis.Persistence
   @script_path Application.app_dir(:chatchat_tcp, "priv/redis/claim_message_persistence.lua")
   @external_resource @script_path
   @script File.read!(@script_path)
