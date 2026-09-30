@@ -11,6 +11,10 @@ defmodule ChatchatTcp.MessageAdmission do
   alias Ecto.UUID
 
   @redis ChatchatTcp.Redis
+  @admit_path Application.app_dir(:chatchat_tcp, "priv/redis/admit_message.lua")
+  @external_resource @admit_path
+  @admit_script File.read!(@admit_path)
+  @admit_sha Base.encode16(:crypto.hash(:sha, @admit_script), case: :lower)
   @confirmation_script_path Application.app_dir(
                               :chatchat_tcp,
                               "priv/redis/confirm_message_id_attribution.lua"
@@ -32,7 +36,7 @@ defmodule ChatchatTcp.MessageAdmission do
   end
 
   @spec prepare_message_sending(pos_integer(), String.t(), pos_integer(), String.t()) ::
-          {:ok, UUID.t()} | {:error, :unavailable}
+          {:ok, UUID.t()} | {:error, :unavailable | :overloaded}
   def prepare_message_sending(sender_id, request_id, recipient_id, message) do
     message_id = UUID.generate()
 
@@ -52,21 +56,25 @@ defmodule ChatchatTcp.MessageAdmission do
         "recipient_id" => recipient_id
       })
 
-    commands = [
-      [
-        "SET",
-        RedisKeys.pending(sender_id, request_id),
-        admission,
-        "PX",
-        config(:pending_ttl)
-      ],
-      ["PUBLISH", RedisKeys.admin_messages_channel(), event]
+    command = [
+      "EVALSHA",
+      @admit_sha,
+      1,
+      RedisKeys.pending(sender_id, request_id),
+      System.system_time(:millisecond),
+      config(:pending_ttl),
+      config(:max_outstanding),
+      admission,
+      event
     ]
 
-    case Redix.pipeline(@redis, commands) do
-      {:ok, ["OK", _subscriber_count]} ->
+    case RedisScript.command(@redis, @admit_script, @admit_sha, command) do
+      {:ok, 1} ->
         :telemetry.execute([:chatchat, :message, :admitted], %{count: 1}, %{})
         {:ok, message_id}
+
+      {:ok, 0} ->
+        {:error, :overloaded}
 
       _ ->
         {:error, :unavailable}
@@ -107,7 +115,7 @@ defmodule ChatchatTcp.MessageAdmission do
     end
   end
 
-  @spec config(:pending_ttl | :delivery_window) :: pos_integer()
+  @spec config(:pending_ttl | :delivery_window | :max_outstanding) :: pos_integer()
   defp config(key) do
     :chatchat_tcp |> Application.fetch_env!(:admission) |> Keyword.fetch!(key)
   end

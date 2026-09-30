@@ -28,6 +28,7 @@ config :chatchat_tcp,
   presence_routing: [node_id: "local", heartbeat_ttl: 30_000, heartbeat_interval: 10_000],
   delivery: [max_concurrency: 64, batch_size: 128],
   admission: [
+    max_outstanding: 100_000,
     pending_ttl: 60_000,
     delivery_window: 20_000,
     persistence_batch_size: 500,

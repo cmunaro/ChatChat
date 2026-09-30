@@ -490,6 +490,30 @@ defmodule ChatchatTcpTest do
     Repo.delete!(receiver)
   end
 
+  test "global outstanding capacity is reserved and released by acknowledgement" do
+    config = Application.fetch_env!(:chatchat_tcp, :admission)
+    Application.put_env(:chatchat_tcp, :admission, Keyword.put(config, :max_outstanding, 1))
+    on_exit(fn -> Application.put_env(:chatchat_tcp, :admission, config) end)
+
+    assert {:ok, message_id} =
+             ChatchatTcp.MessageAdmission.prepare_message_sending(73, "cap-1", 74, "hello")
+
+    assert {:error, :overloaded} =
+             ChatchatTcp.MessageAdmission.prepare_message_sending(73, "cap-2", 74, "hello")
+
+    assert {:ok, ^message_id} =
+             ChatchatTcp.MessageAdmission.confirm_message_id_attribution(
+               73,
+               "cap-1",
+               message_id
+             )
+
+    assert :ok = ChatchatTcp.MessageDelivery.acknowledge(74, message_id)
+
+    assert {:ok, _message_id} =
+             ChatchatTcp.MessageAdmission.prepare_message_sending(73, "cap-2", 74, "hello")
+  end
+
   defp connect do
     {:ok, socket} =
       :gen_tcp.connect(~c"localhost", ChatchatTcp.port(), [:binary, active: false, packet: :line])

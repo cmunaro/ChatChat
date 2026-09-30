@@ -6,4 +6,5 @@ if redis.call('EXISTS', KEYS[2]) == 0 then return 0 end
 redis.call('DEL', KEYS[2]) -- delete message data
 redis.call('SREM', KEYS[1], ARGV[1]) -- remove message id from pendings
 redis.call('ZREM', "chatchat:sending_deadlines", ARGV[1]) -- remove from deadlines
+redis.call('ZREM', 'chatchat:outstanding', ARGV[1])
 return 1

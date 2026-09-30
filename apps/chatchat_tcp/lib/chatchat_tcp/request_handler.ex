@@ -19,6 +19,9 @@ defmodule ChatchatTcp.RequestHandler do
       {:ok, message_id} ->
         {:reply, %{type: "message_admitted", request_id: request_id, message_id: message_id}}
 
+      {:error, :overloaded} ->
+        {:reply, %{type: "error", error: "overloaded", request_id: request_id}}
+
       {:error, :unavailable} ->
         {:reply, %{type: "error", error: "admission_unavailable"}}
     end

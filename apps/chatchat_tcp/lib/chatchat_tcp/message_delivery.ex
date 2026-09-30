@@ -96,11 +96,22 @@ defmodule ChatchatTcp.MessageDelivery do
   def acknowledge(receiver_id, message_id) do
     with {:ok, _message_id} <- UUID.cast(message_id) do
       case acknowledge_redis(receiver_id, message_id) do
-        {:error, :unknown_message} -> MessagesStore.delete_for_receiver(receiver_id, message_id)
+        {:error, :unknown_message} -> acknowledge_postgres(receiver_id, message_id)
         result -> result
       end
     else
       :error -> {:error, :unknown_message}
+    end
+  end
+
+  defp acknowledge_postgres(receiver_id, message_id) do
+    case MessagesStore.delete_for_receiver(receiver_id, message_id) do
+      :ok ->
+        _ = Redix.command(@redis, ["ZREM", "chatchat:outstanding", message_id])
+        :ok
+
+      error ->
+        error
     end
   end
 

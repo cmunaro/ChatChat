@@ -205,9 +205,15 @@ defmodule ChatchatClient do
     request_id = Ecto.UUID.generate()
 
     response_matcher = fn
-      %{"type" => "message_admitted", "request_id" => ^request_id} -> true
-      %{"type" => "error", "error" => "admission_unavailable"} -> true
-      _response -> false
+      %{"type" => "message_admitted", "request_id" => ^request_id} ->
+        true
+
+      %{"type" => "error", "error" => error}
+      when error in ["admission_unavailable", "overloaded"] ->
+        true
+
+      _response ->
+        false
     end
 
     request = %{
