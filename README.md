@@ -4,7 +4,7 @@ Elixir distributed real-time chat exercise.
 
 ## Features
 
-- [x] Register and ogin
+- [x] Register and login
 - [x] Search users
 - [x] 1to1 chats
 - [ ] Group chats
@@ -48,7 +48,7 @@ Elixir distributed real-time chat exercise.
   - [x] Request and response schemas
   - [x] OpenAPI specification
   - [ ] Swagger UI in admin
-- [ ] Backpressure handling
+- [x] Bounded delivery and global admission limit
 - [x] Multi-node and high-load simulations
 - [~] GitHub Actions
   - [x] Unit and integration tests
@@ -61,21 +61,16 @@ Elixir distributed real-time chat exercise.
   - [x] Grafana dashboards
 - [ ] Node-local caching with ConCache
 
-## Architecture goal so far
+## Architecture
 
-chatchat_web (multi instance): HTTP API, LiveView admin, OpenAPI
-
-chatchat_tcp (multi instance): Persistent TCP connections, protocol handling
-
-chatchat_broker (multi instance): Domain logic, authorization, Ecto persistence
-
-chatchat_auth (library): Shared token issuing and verification
-
-chatchat_client (multi instance): Load-test clients
-
-postgres db: Shared PostgreSQL database
-
-redis: Short lived data persistence
+- `chatchat_web`: HTTP, LiveView admin, OpenAPI
+- `chatchat_tcp`: TCP protocol, presence, delivery
+- `chatchat_broker`: domain and PostgreSQL
+- `chatchat_auth`: tokens
+- `chatchat_client`: simulation
+- HAProxy: TCP balancing
+- Redis: presence, admission, transient messages
+- PostgreSQL: users and offline messages
 
 ## Start up
 
@@ -187,8 +182,9 @@ Optional settings:
 ### Docker load test
 
 ```sh
-docker compose --profile loadtest up -d --build --scale loadgen=10
+LOAD_TEST_RUN_ID=run-1 LOADGEN_PARTICIPANTS=4 \
+docker compose --profile loadtest up -d --build --scale tcp=2 --scale loadgen=4
 ```
 
-The active message stage starts only after every generator has announced that its entire shard is
-connected
+Provision runs migrations, creates 150k users, and clears this run's barrier. Each generator starts
+20k clients; traffic starts after all four shards connect.
