@@ -108,13 +108,17 @@ services:
   provision:
     profiles: ["loadtest"]
     image: chatchat-web
+    user: "0"
     command:
       - eval
-      - "{:ok, _} = Application.ensure_all_started(:chatchat_broker); ChatchatBroker.LoadTestProvisioner.run(150000)"
+      - "File.rm_rf!(\"/barrier/#{System.fetch_env!(\"LOAD_TEST_RUN_ID\")}\"); ChatchatBroker.Release.migrate(); {:ok, _} = Application.ensure_all_started(:chatchat_broker); ChatchatBroker.LoadTestProvisioner.run(150000)"
     environment:
       DATABASE_URL: "ecto://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db/${POSTGRES_DB}"
       SECRET_KEY_BASE: "1234567890123456789012345678901234567890123456789012345678901234"
       RELEASE_NAME: chatchat_web
+      LOAD_TEST_RUN_ID: "${LOAD_TEST_RUN_ID:-150k}"
+    volumes:
+      - loadtest_barrier:/barrier
     depends_on:
       db:
         condition: service_healthy
@@ -135,7 +139,7 @@ services:
       ERL_AFLAGS: "+MHacful de +MBacful de"
       SECRET_KEY_BASE: "1234567890123456789012345678901234567890123456789012345678901234"
       CLIENTS_PER_LOADGEN: "20000"
-      LOADGEN_PARTICIPANTS: "5"
+      LOADGEN_PARTICIPANTS: "${LOADGEN_PARTICIPANTS:-4}"
       LOAD_TEST_FIRST_USER_ID: "1500000001"
       LOAD_TEST_RUN_ID: "${LOAD_TEST_RUN_ID:-150k}"
       CLIENT_CREATION_CONCURRENCY: "20"
