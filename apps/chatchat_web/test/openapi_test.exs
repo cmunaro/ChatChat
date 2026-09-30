@@ -1,14 +1,30 @@
 defmodule ChatchatWeb.OpenApiTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   import Phoenix.ConnTest
 
+  alias ChatchatBroker.{Accounts, Repo}
+
   @endpoint ChatchatWeb.Endpoint
 
-  test "GET /openapi serves the authentication API specification" do
+  setup do
+    :ok = Ecto.Adapters.SQL.Sandbox.checkout(Repo)
+  end
+
+  test "OpenAPI and Swagger require an administrator session" do
+    for path <- ["/admin/openapi", "/admin/swaggerui"] do
+      conn = get(build_conn(), path)
+      assert redirected_to(conn) == "/admin/login"
+    end
+
+    assert response(get(build_conn(), "/openapi"), 404)
+    assert response(get(build_conn(), "/swaggerui"), 404)
+  end
+
+  test "GET /admin/openapi serves the HTTP specification" do
     spec =
-      build_conn()
-      |> get("/openapi")
+      authenticated_conn()
+      |> get("/admin/openapi")
       |> json_response(200)
 
     assert spec["openapi"] =~ "3.0"
@@ -42,11 +58,18 @@ defmodule ChatchatWeb.OpenApiTest do
                "password" => %{"minLength" => 8, "maxLength" => 128, "writeOnly" => true}
              }
            } = spec["components"]["schemas"]["CredentialsRequest"]
+
+    refute Map.has_key?(spec["components"]["schemas"], "TcpSendMessage")
   end
 
-  test "GET /swaggerui serves the interactive API documentation" do
-    conn = get(build_conn(), "/swaggerui")
+  test "GET /admin/swaggerui serves the protected interactive documentation" do
+    conn = authenticated_conn() |> get("/admin/swaggerui")
 
-    assert html_response(conn, 200) =~ "/openapi"
+    assert html_response(conn, 200) =~ "/admin/openapi"
+  end
+
+  defp authenticated_conn do
+    {:ok, admin} = Accounts.register_admin("docs_admin", "correct horse")
+    build_conn() |> init_test_session(%{admin_user_id: admin.id})
   end
 end

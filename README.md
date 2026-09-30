@@ -84,8 +84,9 @@ mix phx.server
 ## API documentation
 
 ```text
-/swaggerui
-/openapi
+/admin/swaggerui
+/admin/openapi
+/admin/tcp-protocol
 ```
 
 ## Admin dashboard

@@ -69,6 +69,8 @@ defmodule ChatchatWeb.Admin.OverviewLive do
             <span class="status-dot"></span>
             Live · updated <time id="last-updated"><%= format_time(@stats.updated_at) %></time>
           </div>
+          <a class="logout-button" href="/admin/swaggerui">HTTP API</a>
+          <a class="logout-button" href="/admin/tcp-protocol">TCP protocol</a>
           <form method="post" action="/admin/logout">
             <input type="hidden" name="_csrf_token" value={Plug.CSRFProtection.get_csrf_token()} />
             <button class="logout-button" type="submit">Sign out</button>
