@@ -10,7 +10,9 @@ defmodule ChatchatTcp.Application do
     children =
       [
         {Registry, keys: :duplicate, name: ChatchatTcp.Presence.Registry},
-        {Redix, redis_options()},
+        redis_child(ChatchatTcp.Redis),
+        redis_child(ChatchatTcp.Redis.Delivery),
+        redis_child(ChatchatTcp.Redis.Persistence),
         ChatchatTcp.PresenceRouting,
         ChatchatTcp.MessageAdmission,
         {Task.Supervisor, name: ChatchatTcp.Delivery.TaskSupervisor},
@@ -44,10 +46,8 @@ defmodule ChatchatTcp.Application do
     end
   end
 
-  defp redis_options do
-    {
-      Application.fetch_env!(:chatchat_tcp, :redis_url),
-      name: ChatchatTcp.Redis
-    }
+  defp redis_child(name) do
+    options = {Application.fetch_env!(:chatchat_tcp, :redis_url), name: name}
+    Supervisor.child_spec({Redix, options}, id: name)
   end
 end

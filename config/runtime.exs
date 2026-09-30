@@ -43,6 +43,10 @@ if config_env() == :prod do
         ip: {0, 0, 0, 0},
         port: String.to_integer(System.get_env("METRICS_PORT", "9568"))
       ],
+      delivery: [
+        max_concurrency: String.to_integer(System.get_env("DELIVERY_CONCURRENCY", "64")),
+        batch_size: String.to_integer(System.get_env("DELIVERY_BATCH_SIZE", "128"))
+      ],
       admission: [
         pending_ttl: String.to_integer(System.get_env("ADMISSION_TTL", "60000")),
         delivery_window: String.to_integer(System.get_env("DELIVERY_WINDOW", "20000")),

@@ -26,7 +26,7 @@ config :chatchat_tcp,
   redis_url: "redis://localhost:6379",
   metrics_server: [ip: {0, 0, 0, 0}, port: 9568],
   presence_routing: [node_id: "local", heartbeat_ttl: 30_000, heartbeat_interval: 10_000],
-  delivery: [max_concurrency: 64],
+  delivery: [max_concurrency: 64, batch_size: 128],
   admission: [
     pending_ttl: 60_000,
     delivery_window: 20_000,
