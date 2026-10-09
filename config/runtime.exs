@@ -32,7 +32,14 @@ if config_env() == :prod do
 
   if release_name == "chatchat_tcp" do
     if query = System.get_env("TCP_CLUSTER_DNS") do
-      config :chatchat_tcp,
+      config :chatchat_tcp, :cluster_topologies,
+        tcp: [
+          strategy: Cluster.Strategy.DNSPoll,
+          config: [polling_interval: 5_000, query: query, node_basename: "chatchat_tcp"]
+        ]
+    end
+
+    config :chatchat_tcp,
       redis_url: System.get_env("REDIS_URL", "redis://localhost:6379"),
       presence_routing: [
         node_id: System.get_env("TCP_NODE_ID", System.fetch_env!("HOSTNAME")),
@@ -58,7 +65,7 @@ if config_env() == :prod do
           String.to_integer(System.get_env("PERSISTENCE_RETRY_INTERVAL", "1000"))
       ],
       server: [
-        transport_options: [ip: {0, 0, 0, 0}],
+        transport_options: [ip: {0, 0, 0, 0}, send_timeout: 1_000, sndbuf: 16_384],
         port: String.to_integer(System.get_env("TCP_PORT", "4040")),
         read_timeout: String.to_integer(System.get_env("TCP_READ_TIMEOUT", "60000"))
       ]

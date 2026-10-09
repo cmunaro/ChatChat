@@ -13,7 +13,6 @@ config :chatchat_client, :store,
   root: Path.expand("../.client-state", __DIR__),
   namespace: "interactive"
 
-
 config :logger, level: :error
 
 config :chatchat_broker,
@@ -39,8 +38,12 @@ config :chatchat_tcp,
     persistence_batch_size: 500,
     persistence_retry_interval: 1_000
   ],
-  server: [transport_options: [ip: {0, 0, 0, 0}], port: 4040, read_timeout: 60_000],
-  handler: [authentication_timeout: 5_000, max_frame_size: 8_192]
+  server: [
+    transport_options: [ip: {0, 0, 0, 0}, send_timeout: 1_000, sndbuf: 16_384],
+    port: 4040,
+    read_timeout: 60_000
+  ],
+  handler: [authentication_timeout: 5_000, max_frame_size: 4_096]
 
 config :chatchat_web, ChatchatWeb.Endpoint,
   adapter: Bandit.PhoenixAdapter,

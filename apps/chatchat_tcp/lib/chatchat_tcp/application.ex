@@ -16,22 +16,11 @@ defmodule ChatchatTcp.Application do
          ]},
         {Registry, keys: :unique, name: ChatchatTcp.Presence.Registry},
         redis_child(ChatchatTcp.Redis),
-        redis_child(ChatchatTcp.Redis.Delivery),
-        redis_child(ChatchatTcp.Redis.Persistence),
         ChatchatTcp.PresenceRouting,
-        ChatchatTcp.MessageAdmission,
-        {Task.Supervisor, name: ChatchatTcp.Delivery.TaskSupervisor},
-        ChatchatTcp.Delivery,
-        ChatchatTcp.Persistence,
-        {ThousandIsland,
-         Keyword.merge(tcp_options,
-           handler_module: ChatchatTcp.Handler,
-           handler_options: Application.fetch_env!(:chatchat_tcp, :handler),
-           supervisor_options: [name: ChatchatTcp.Server]
-         )}
+        {ChatchatTcp.DeliverySupervisor, tcp_options}
       ] ++ metrics_children()
 
-    Supervisor.start_link(children, strategy: :one_for_one, name: ChatchatTcp.Supervisor)
+    Supervisor.start_link(children, strategy: :rest_for_one, name: ChatchatTcp.Supervisor)
   end
 
   defp metrics_children do

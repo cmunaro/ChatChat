@@ -4,7 +4,6 @@ config :chatchat_client, :store,
   root: Path.join(System.tmp_dir!(), "chatchat-client-tests"),
   namespace: "test-" <> Base.encode16(:crypto.strong_rand_bytes(16), case: :lower)
 
-
 secret_key_base = "1234567890123456789012345678901234567890123456789012345678901234"
 
 config :chatchat_auth, secret_key_base: secret_key_base
@@ -19,8 +18,12 @@ config :chatchat_tcp,
     persistence_batch_size: 50,
     persistence_retry_interval: 50
   ],
-  server: [transport_options: [ip: {127, 0, 0, 1}], port: 0, read_timeout: 1_000],
-  handler: [authentication_timeout: 100, max_frame_size: 1_024]
+  server: [
+    transport_options: [ip: {127, 0, 0, 1}, send_timeout: 1_000, sndbuf: 16_384],
+    port: 0,
+    read_timeout: 60_000
+  ],
+  handler: [authentication_timeout: 100, max_frame_size: 4_096]
 
 config :argon2_elixir, t_cost: 1, m_cost: 8, parallelism: 1
 

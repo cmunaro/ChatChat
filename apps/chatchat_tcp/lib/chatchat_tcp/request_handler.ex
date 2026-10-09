@@ -1,59 +1,41 @@
 defmodule ChatchatTcp.RequestHandler do
-  alias ChatchatTcp.{Delivery, MessageAdmission, Presence}
+  alias ChatchatTcp.{MessageDelivery, Presence, Protocol}
 
-  @spec handle(pos_integer(), binary(), map()) :: :ok | {:reply, map()} | {:error, binary()}
-  def handle(_current_user_id, "is_online", %{"user_id" => user_id}) when is_integer(user_id) do
-    {:reply, %{is_online: Presence.online?(user_id)}}
-  end
+  def handle(_user, _session, "ping", _request), do: {:reply, %{type: "pong"}}
 
-  def handle(_current_user_id, "ping", _request), do: {:reply, %{type: "pong"}}
-
-  def handle(
-        current_user_id,
-        "send_message",
-        %{"request_id" => request_id, "user_id" => user_id, "message" => message}
-      )
-      when is_binary(request_id) and request_id != "" and byte_size(request_id) <= 128 and
-             is_integer(user_id) and is_binary(message) do
-    case MessageAdmission.prepare_message_sending(current_user_id, request_id, user_id, message) do
-      {:ok, message_id} ->
-        {:reply, %{type: "message_admitted", request_id: request_id, message_id: message_id}}
-
-      {:error, :overloaded} ->
-        {:reply, %{type: "error", error: "overloaded", request_id: request_id}}
-
-      {:error, :unavailable} ->
-        {:reply, %{type: "error", error: "admission_unavailable"}}
+  def handle(_user, _session, "is_online", %{"user_id" => receiver}) do
+    if Protocol.user?(receiver) do
+      {:reply, %{is_online: match?({:ok, _}, Presence.route(receiver))}}
+    else
+      {:error, "invalid_request"}
     end
   end
 
-  def handle(
-        current_user_id,
-        "message_accepted_ack",
-        %{"request_id" => request_id, "message_id" => message_id}
-      )
-      when is_binary(request_id) and request_id != "" and is_binary(message_id) and
-             message_id != "" do
-    case MessageAdmission.confirm_message_id_attribution(current_user_id, request_id, message_id) do
-      {:ok, ^message_id} ->
-        :ok
+  def handle(user, session, "send_message", request) do
+    if Protocol.uuid?(request["request_id"]) and Protocol.uuid?(request["message_id"]) do
+      case MessageDelivery.submit(user, session, request) do
+        {:accepted, reference} ->
+          {:accepted, reference}
 
-      {:error, reason} ->
-        {:reply, %{type: "error", error: reason}}
+        {:error, :invalid_request} ->
+          {:reply,
+           Protocol.result(
+             request["request_id"],
+             request["message_id"],
+             :rejected,
+             :invalid_request
+           )}
+
+        {:error, reason} ->
+          {:reply, Protocol.result(request["request_id"], request["message_id"], :failed, reason)}
+      end
+    else
+      {:error, "invalid_request"}
     end
   end
 
-  def handle(
-        current_user_id,
-        "message_delivered_ack",
-        %{"message_id" => message_id}
-      )
-      when is_binary(message_id) and message_id != "" do
-    case Delivery.acknowledge(current_user_id, message_id) do
-      :ok -> :ok
-      {:error, reason} -> {:reply, %{type: "error", error: reason}}
-    end
-  end
+  def handle(user, session, "message_delivered_ack", request),
+    do: MessageDelivery.acknowledge(user, session, request)
 
-  def handle(_current_user_id, _type, _request), do: {:error, "not handled"}
+  def handle(_user, _session, _type, _request), do: {:error, "invalid_request"}
 end
