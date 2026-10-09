@@ -102,6 +102,8 @@ Dashboard: `http://localhost:4000/admin`
 
 [Message delivery flow](MESSAGE_DELIVERY.md)
 
+[Agreed replacement architecture and implementation goal](MESSAGE_DELIVERY_GOAL.md)
+
 ## Metrics
 
 - Prometheus: http://localhost:9090

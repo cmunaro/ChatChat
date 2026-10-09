@@ -1,5 +1,8 @@
 # Message delivery
 
+> This document describes the current implementation. The agreed replacement architecture and
+> implementation acceptance criteria are in [Message delivery architecture goal](MESSAGE_DELIVERY_GOAL.md).
+
 Delivery is at least once. Messages remain in Redis for 20 seconds, then move to PostgreSQL if not
 acknowledged. Consumers deduplicate by `message_id`.
 
