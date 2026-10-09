@@ -21,3 +21,5 @@ erl_crash.dump
 
 # Local development environment overrides and credentials.
 .env
+# Durable local client ownership is never checked into source control.
+/.client-state/

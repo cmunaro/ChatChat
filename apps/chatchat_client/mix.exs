@@ -28,6 +28,7 @@ defmodule ChatchatClient.MixProject do
     [
       {:chatchat_auth, in_umbrella: true},
       {:ecto, "~> 3.14"},
+      {:exqlite, "~> 0.35"},
       {:jason, "~> 1.4"}
     ]
   end
