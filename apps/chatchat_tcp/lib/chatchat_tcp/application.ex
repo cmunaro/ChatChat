@@ -9,7 +9,12 @@ defmodule ChatchatTcp.Application do
 
     children =
       [
-        {Registry, keys: :duplicate, name: ChatchatTcp.Presence.Registry},
+        {Cluster.Supervisor,
+         [
+           Application.get_env(:chatchat_tcp, :cluster_topologies, []),
+           [name: ChatchatTcp.ClusterSupervisor]
+         ]},
+        {Registry, keys: :unique, name: ChatchatTcp.Presence.Registry},
         redis_child(ChatchatTcp.Redis),
         redis_child(ChatchatTcp.Redis.Delivery),
         redis_child(ChatchatTcp.Redis.Persistence),

@@ -78,6 +78,8 @@ services:
       ERL_AFLAGS: "+MHacful de +MBacful de"
       TCP_PORT: "4040"
       METRICS_PORT: "9568"
+      TCP_CLUSTER_DNS: tcp
+      RELEASE_COOKIE: "${TCP_CLUSTER_COOKIE:?Set TCP_CLUSTER_COOKIE for the private TCP cluster}"
     depends_on:
       db:
         condition: service_healthy

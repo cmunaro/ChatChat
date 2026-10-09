@@ -31,7 +31,8 @@ if config_env() == :prod do
   end
 
   if release_name == "chatchat_tcp" do
-    config :chatchat_tcp,
+    if query = System.get_env("TCP_CLUSTER_DNS") do
+      config :chatchat_tcp,
       redis_url: System.get_env("REDIS_URL", "redis://localhost:6379"),
       presence_routing: [
         node_id: System.get_env("TCP_NODE_ID", System.fetch_env!("HOSTNAME")),

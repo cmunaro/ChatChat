@@ -41,6 +41,7 @@ defmodule ChatchatTcp.MixProject do
       {:bandit, "~> 1.0"},
       {:ecto, "~> 3.14"},
       {:jason, "~> 1.4"},
+      {:libcluster, "~> 3.5"},
       {:plug, "~> 1.16"},
       {:prom_ex, "~> 1.12"},
       {:redix, "~> 1.8"},

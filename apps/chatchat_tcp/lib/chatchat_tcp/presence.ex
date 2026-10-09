@@ -1,52 +1,142 @@
 defmodule ChatchatTcp.Presence do
-  alias ChatchatTcp.{PresenceRouting, RedisKeys}
+  alias ChatchatTcp.{PresenceRouting, RedisKeys, RedisScript}
   alias ChatchatTcp.Presence.Registry, as: PresenceRegistry
 
   @redis ChatchatTcp.Redis
+  @script_path Application.app_dir(:chatchat_tcp, "priv/redis/presence_session.lua")
+  @external_resource @script_path
+  @script File.read!(@script_path)
+  @sha Base.encode16(:crypto.hash(:sha, @script), case: :lower)
 
-  @spec register(integer()) :: {:ok, pid()} | {:error, term()}
-  def register(user_id) when is_integer(user_id) do
-    node_id = PresenceRouting.node_id()
-    heartbeat_ttl = PresenceRouting.heartbeat_ttl()
+  @spec register(pos_integer()) :: {:ok, pid()} | {:error, atom()}
+  def register(user_id) when is_integer(user_id) and user_id > 0 do
+    route = %{
+      "node" => Atom.to_string(node()),
+      "owner" => PresenceRouting.node_id(),
+      "session" => Ecto.UUID.generate()
+    }
 
-    commands = [
-      ["SADD", RedisKeys.presence(user_id), node_id],
-      ["SET", RedisKeys.presence_node(node_id), "1", "PX", heartbeat_ttl]
-    ]
+    case Registry.register(PresenceRegistry, user_id, route) do
+      {:ok, owner} -> acquire(user_id, route, owner)
+      {:error, {:already_registered, _pid}} -> {:error, :already_connected}
+    end
+  end
 
-    with {:ok, owner} <- Registry.register(PresenceRegistry, user_id, nil),
-         {:ok, [_added, "OK"]} <- Redix.pipeline(@redis, commands) do
-      {:ok, owner}
-    else
-      error ->
+  defp acquire(user_id, route, owner) do
+    case session_operation(:acquire, user_id, route) do
+      {:ok, 1} ->
+        :ets.insert(ChatchatTcp.Presence.Users, {user_id, self()})
+        {:ok, owner}
+
+      result ->
         Registry.unregister(PresenceRegistry, user_id)
-        error
+        :ets.delete_object(ChatchatTcp.Presence.Users, {user_id, self()})
+        reason = if result == {:ok, 0}, do: :already_connected, else: :presence_unavailable
+        {:error, reason}
+    end
+  end
+
+  @doc "Renews only the calling connection's still-live lease."
+  def renew(user_id) do
+    with [{pid, route}] when pid == self() <- get_connections(user_id),
+         {:ok, 1} <- session_operation(:renew, user_id, route) do
+      :ok
+    else
+      _ -> {:error, :presence_unavailable}
     end
   end
 
   @spec unregister(integer()) :: :ok
   def unregister(user_id) when is_integer(user_id) do
-    Registry.unregister(PresenceRegistry, user_id)
+    case get_connections(user_id) do
+      [{pid, route}] when pid == self() ->
+        _ = session_operation(:release, user_id, route)
+        Registry.unregister(PresenceRegistry, user_id)
+        :ets.delete_object(ChatchatTcp.Presence.Users, {user_id, self()})
 
-    if not online?(user_id) do
-      Redix.command(@redis, ["SREM", RedisKeys.presence(user_id), PresenceRouting.node_id()])
+      _ ->
+        :ok
     end
 
     :ok
   end
 
-  @spec online?(integer()) :: boolean()
-  def online?(user_id) when is_integer(user_id) do
-    Registry.lookup(PresenceRegistry, user_id) != []
+  @doc false
+  def session_operation(operation, user_id, route)
+      when operation in [:acquire, :renew, :release] do
+    command = [
+      "EVALSHA",
+      @sha,
+      2,
+      RedisKeys.presence_route(user_id),
+      RedisKeys.presence_node(route["owner"]),
+      Atom.to_string(operation),
+      Jason.encode!(route),
+      PresenceRouting.heartbeat_ttl()
+    ]
+
+    RedisScript.command(@redis, @script, @sha, command)
   end
 
-  @spec get_connections(integer()) :: [{pid(), any()}]
-  def get_connections(user_id) when is_integer(user_id) do
-    Registry.lookup(PresenceRegistry, user_id)
+  @doc "Resolves Redis hints only against this node and trusted connected nodes."
+  def route(user_id) when is_integer(user_id) and user_id > 0 do
+    with {:ok, encoded} when is_binary(encoded) <-
+           Redix.command(@redis, ["GET", RedisKeys.presence_route(user_id)]),
+         {:ok, %{"node" => name, "owner" => owner, "session" => session}} <- Jason.decode(encoded),
+         true <- is_binary(owner) and is_binary(session),
+         {:ok, ^session} <- Ecto.UUID.cast(session),
+         {:ok, 1} <- Redix.command(@redis, ["EXISTS", RedisKeys.presence_node(owner)]),
+         {:ok, destination} <- trusted_node(name) do
+      {:ok, %{node: destination, owner: owner, session: session}}
+    else
+      _ -> {:error, :unavailable}
+    end
   end
+
+  def trusted_node(name, nodes \\ [node() | Node.list()]) do
+    case Enum.find(nodes, &(Atom.to_string(&1) == name)) do
+      nil -> {:error, :unavailable}
+      destination -> {:ok, destination}
+    end
+  end
+
+  @spec online?(integer()) :: boolean()
+  def online?(user_id) when is_integer(user_id), do: get_connections(user_id) != []
+
+  @spec get_connections(integer()) :: [{pid(), map()}]
+  def get_connections(user_id) when is_integer(user_id),
+    do: Registry.lookup(PresenceRegistry, user_id)
 
   def get_connections(_), do: []
 
   @spec connection_count() :: non_neg_integer()
   def connection_count, do: Registry.count(PresenceRegistry)
+
+  def connections_page(cursor \\ nil) do
+    result =
+      if cursor,
+        do: :ets.select(cursor),
+        else:
+          :ets.select(ChatchatTcp.Presence.Users, [{{:"$1", :"$2"}, [], [{{:"$1", :"$2"}}]}], 128)
+
+    case result do
+      :"$end_of_table" ->
+        {[], nil}
+
+      {entries, next} ->
+        live =
+          Enum.filter(entries, fn {user, pid} ->
+            if match?([{^pid, _}], get_connections(user)) do
+              true
+            else
+              :ets.delete_object(ChatchatTcp.Presence.Users, {user, pid})
+              false
+            end
+          end)
+
+        {live, if(next == :"$end_of_table", do: nil, else: next)}
+    end
+  rescue
+    ArgumentError -> {[], nil}
+  end
 end

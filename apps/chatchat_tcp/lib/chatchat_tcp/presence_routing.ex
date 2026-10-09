@@ -1,6 +1,6 @@
 defmodule ChatchatTcp.PresenceRouting do
   @moduledoc """
-  Maintains this TCP node's Redis heartbeat and node-specific delivery channel.
+  Maintains this TCP node's expiring Redis heartbeat.
 
   User ownership is stored separately by `ChatchatTcp.Presence`. A random boot
   suffix prevents ownership left by a crashed process from becoming valid when
@@ -21,14 +21,12 @@ defmodule ChatchatTcp.PresenceRouting do
   @spec node_id() :: binary()
   def node_id, do: :persistent_term.get(@node_id_key)
 
-  @spec delivery_channel() :: binary()
-  def delivery_channel, do: RedisKeys.delivery_channel(node_id())
-
   @spec heartbeat_ttl() :: pos_integer()
   def heartbeat_ttl, do: :persistent_term.get(@heartbeat_ttl_key)
 
   @impl GenServer
   def init(_options) do
+    :ets.new(ChatchatTcp.Presence.Users, [:set, :named_table, :public])
     config = Application.fetch_env!(:chatchat_tcp, :presence_routing)
     base_id = Keyword.fetch!(config, :node_id)
     ttl = Keyword.fetch!(config, :heartbeat_ttl)

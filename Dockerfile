@@ -14,6 +14,7 @@ WORKDIR /build
 COPY mix.exs mix.lock ./
 COPY config config
 COPY apps apps
+COPY rel rel
 
 RUN mix deps.get --only prod
 RUN mix compile
@@ -41,7 +42,7 @@ ENV LANG=C.UTF-8
 ENV LD_LIBRARY_PATH=/usr/lib
 ENV ELIXIR_ERL_OPTIONS=+fnu
 
-EXPOSE 4000 4040
+EXPOSE 4000 4040 4369 9100
 
 ENTRYPOINT ["/app/bin/server"]
 CMD ["start"]
