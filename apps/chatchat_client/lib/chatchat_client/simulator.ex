@@ -10,7 +10,8 @@ defmodule ChatchatClient.Simulator do
     message_payload_size: 32,
     auto_start_activity: true,
     username_prefix: nil,
-    first_user_id: nil
+    first_user_id: nil,
+    reuse_application_store: false
   }
 
   def start(options) do
@@ -39,12 +40,34 @@ defmodule ChatchatClient.Simulator do
   @impl true
   def init(options) do
     {:ok, supervisor} = DynamicSupervisor.start_link(strategy: :one_for_one)
+
+    {namespace, store_server} =
+      if options.reuse_application_store do
+        {Application.fetch_env!(:chatchat_client, :store) |> Keyword.fetch!(:namespace),
+         ChatchatClient.Store}
+      else
+        namespace = Ecto.UUID.generate()
+        server = {:via, Registry, {ChatchatClient.StoreRegistry, namespace}}
+
+        store_options =
+          Application.fetch_env!(:chatchat_client, :store)
+          |> Keyword.merge(namespace: namespace, name: server)
+
+        {:ok, _store} =
+          DynamicSupervisor.start_child(supervisor, {ChatchatClient.Store, store_options})
+
+        {namespace, server}
+      end
+
     clients = :ets.new(:simulated_clients, [:set, :public])
     prefix = options.username_prefix || "sim_#{System.unique_integer([:positive])}"
 
     state = %{
       options: options,
       supervisor: supervisor,
+      store_server: store_server,
+      state_namespace: namespace,
+      result_counts: :atomics.new(5, signed: false),
       clients: clients,
       prefix: prefix,
       started: 0,
@@ -64,10 +87,17 @@ defmodule ChatchatClient.Simulator do
     status = %{
       requested_clients: state.options.number_of_clients,
       wrappers_started: state.started,
-      running_wrappers: children.active,
+      running_wrappers:
+        children.active - if(state.store_server == ChatchatClient.Store, do: 0, else: 1),
       ready_clients: :ets.info(state.clients, :size),
       startup_failures: state.startup_failures,
       startup_failures_by_reason: state.startup_failures_by_reason,
+      state_namespace: state.state_namespace,
+      queued_messages: :atomics.get(state.result_counts, 1),
+      confirmed_attempts: :atomics.get(state.result_counts, 2),
+      failed_attempts: :atomics.get(state.result_counts, 3),
+      rejected_messages: :atomics.get(state.result_counts, 4),
+      submission_failures: :atomics.get(state.result_counts, 5),
       phase: phase(state)
     }
 
@@ -181,6 +211,8 @@ defmodule ChatchatClient.Simulator do
       user_id: user_id,
       simulator: self(),
       clients: state.clients,
+      store_server: state.store_server,
+      result_counts: state.result_counts,
       number_of_clients: state.options.number_of_clients,
       send_probability: state.options.send_message_probability_per_second,
       disconnection_probability: state.options.disconnection_probability_per_second,

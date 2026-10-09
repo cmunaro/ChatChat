@@ -1,91 +1,79 @@
 defmodule ChatchatClient.Socket do
-  require Logger
+  alias ChatchatClient.Store
 
-  @spec connect(binary()) :: {:ok, port(), pos_integer()} | {:error, term()}
   def connect(token) do
-    case :gen_tcp.connect(host(), port(), [:binary, active: false, packet: :line], timeout()) do
+    options = [
+      :binary,
+      active: false,
+      packet: :line,
+      packet_size: 4_097,
+      send_timeout: 1_000,
+      send_timeout_close: true
+    ]
+
+    case :gen_tcp.connect(host(), port(), options, timeout()) do
       {:ok, socket} -> authenticate(socket, token)
       {:error, reason} -> {:error, {:connect, reason}}
     end
   end
 
-  @spec activate(port()) :: :ok | {:error, term()}
   def activate(socket), do: :inet.setopts(socket, active: :once)
+  def request(socket, request, matcher, context \\ nil)
+  def request(nil, _request, _matcher, _context), do: {:error, :disconnected}
 
-  @type response_matcher :: (map() -> boolean())
-
-  @spec request(port() | nil, map(), response_matcher()) :: {:ok, map()} | {:error, term()}
-  def request(nil, _request, _response_matcher), do: {:error, :disconnected}
-
-  def request(socket, request, response_matcher) do
-    with :ok <- send_frame(socket, request) do
-      receive_response(socket, response_matcher, deadline())
-    end
+  def request(socket, request, matcher, context) do
+    with :ok <- send_frame(socket, request),
+         do: receive_response(socket, matcher, context, deadline())
   end
 
-  @spec send_frame(port(), map()) :: :ok | {:error, term()}
-  def send_frame(socket, payload), do: :gen_tcp.send(socket, Jason.encode!(payload) <> "\n")
+  def send_frame(nil, _payload), do: {:error, :disconnected}
 
-  @spec handle_incoming(port(), binary()) :: :ok
-  def handle_incoming(socket, line) do
+  def send_frame(socket, payload) do
+    encoded = Jason.encode!(payload)
+
+    if byte_size(encoded) <= 4_096,
+      do: :gen_tcp.send(socket, encoded <> "\n"),
+      else: {:error, :frame_too_large}
+  end
+
+  def handle_incoming(socket, line, context) do
     case decode(line) do
-      {:ok,
-       %{
-         "type" => "message",
-         "message_id" => message_id,
-         "from_user_id" => user_id,
-         "message" => message
-       }} ->
-        Logger.info("Message from #{user_id}: #{message}")
-        send_frame(socket, %{type: "message_delivered_ack", message_id: message_id})
-
-      {:ok, response} ->
-        Logger.warning("Unexpected response: #{inspect(response)}")
-
-      {:error, reason} ->
-        Logger.warning("Invalid response: #{inspect(reason)}")
+      {:ok, response} -> handle_decoded(socket, response, context)
+      {:error, _reason} -> suspend_invalid(context)
     end
-
-    :ok
   end
 
-  @spec close(port() | nil) :: :ok
   def close(nil), do: :ok
   def close(socket), do: :gen_tcp.close(socket)
 
   defp authenticate(socket, token) do
     result =
       with :ok <- send_frame(socket, %{type: "authenticate", token: token}),
-           {:ok, %{"type" => "authenticated", "user_id" => user_id}} <- receive_frame(socket) do
-        {:ok, socket, user_id}
+           {:ok, line} <- :gen_tcp.recv(socket, 0, timeout()),
+           {:ok, %{"type" => "authenticated", "user_id" => user}} <- decode(line),
+           true <- is_integer(user) and user > 0 do
+        {:ok, socket, user}
+      else
+        {:error, reason} -> {:error, {:authenticate, reason}}
+        response -> {:error, {:authenticate, response}}
       end
 
-    case result do
-      {:error, reason} ->
-        close(socket)
-        {:error, {:authenticate, reason}}
-
-      success ->
-        success
-    end
+    if match?({:error, _}, result), do: close(socket)
+    result
   end
 
-  defp receive_response(socket, response_matcher, deadline) do
+  defp receive_response(socket, matcher, context, deadline) do
     receive do
       {:tcp, ^socket, line} ->
-        :ok = activate(socket)
-
-        case decode(line) do
-          {:ok, response} ->
-            if response_matcher.(response) do
-              {:ok, response}
-            else
-              handle_decoded(socket, response)
-              receive_response(socket, response_matcher, deadline)
+        with {:ok, response} <- decode(line) do
+          if matcher.(response) do
+            with :ok <- activate(socket), do: {:ok, response}
+          else
+            with :ok <- handle_decoded(socket, response, context),
+                 :ok <- activate(socket) do
+              receive_response(socket, matcher, context, deadline)
             end
-
-          {:error, reason} ->
-            {:error, reason}
+          end
         end
 
       {:tcp_closed, ^socket} ->
@@ -94,30 +82,96 @@ defmodule ChatchatClient.Socket do
       {:tcp_error, ^socket, reason} ->
         {:error, reason}
     after
-      remaining(deadline) -> {:error, :timeout}
+      max(deadline - System.monotonic_time(:millisecond), 0) -> {:error, :timeout}
     end
   end
 
-  defp handle_decoded(socket, %{"type" => "message"} = message),
-    do: acknowledge_message(socket, message)
-
-  defp handle_decoded(_socket, response),
-    do: Logger.warning("Unexpected response: #{inspect(response)}")
-
-  defp acknowledge_message(socket, message) do
-    Logger.info("Message from #{message["from_user_id"]}: #{message["message"]}")
-    send_frame(socket, %{type: "message_delivered_ack", message_id: message["message_id"]})
+  defp handle_decoded(
+         socket,
+         %{
+           "type" => "message",
+           "message_id" => id,
+           "from_user_id" => sender,
+           "message" => payload,
+           "inserted_at" => timestamp,
+           "receipt_id" => receipt
+         },
+         %{store: store, user_id: user}
+       ) do
+    with {:ok, ^receipt} <- Ecto.UUID.cast(receipt),
+         {:ok, _saved_or_duplicate} <-
+           Store.receive_message(store, user, sender, id, payload, timestamp) do
+      send_frame(socket, %{
+        type: "message_delivered_ack",
+        from_user_id: sender,
+        message_id: id,
+        receipt_id: receipt
+      })
+    else
+      error -> {:error, {:receive_storage, error}}
+    end
   end
 
-  defp receive_frame(socket) do
-    with {:ok, line} <- :gen_tcp.recv(socket, 0, timeout()), do: decode(line)
+  defp handle_decoded(_socket, %{"type" => "message_result"} = response, %{
+         on_result: callback,
+         store: store,
+         user_id: user
+       }) do
+    valid =
+      match?({:ok, _}, Ecto.UUID.cast(response["request_id"])) and
+        match?({:ok, _}, Ecto.UUID.cast(response["message_id"])) and
+        (response["status"] == "ok" or
+           (response["status"] == "failed" and response["reason"] in ["capacity", "unavailable"]) or
+           (response["status"] == "rejected" and
+              response["reason"] in ["invalid_request", "invalid_receiver", "identity_conflict"]))
+
+    if valid do
+      callback.(response)
+      :ok
+    else
+      suspend_invalid(%{store: store, user_id: user})
+    end
+  end
+
+  defp handle_decoded(_socket, %{"type" => "error", "error" => reason}, %{
+         store: store,
+         user_id: user
+       }) do
+    reason =
+      if is_binary(reason) and byte_size(reason) <= 128, do: reason, else: "invalid_response"
+
+    case Store.suspend(store, user, reason) do
+      :ok -> {:error, {:protocol_suspended, reason}}
+      error -> {:error, {:suspension_storage, error}}
+    end
+  end
+
+  defp handle_decoded(_socket, %{"type" => "pong"}, _context), do: :ok
+  defp handle_decoded(_socket, %{"is_online" => value}, _context) when is_boolean(value), do: :ok
+  defp handle_decoded(_socket, _response, context), do: suspend_invalid(context)
+
+  defp suspend_invalid(%{store: store, user_id: user}) do
+    handle_decoded(nil, %{"type" => "error", "error" => "invalid_response"}, %{
+      store: store,
+      user_id: user
+    })
+  end
+
+  defp suspend_invalid(_context), do: {:error, :invalid_response}
+
+  defp decode(line) do
+    if byte_size(line) <= 4_097 do
+      case Jason.decode(String.trim_trailing(line, "\n")) do
+        {:ok, response} when is_map(response) -> {:ok, response}
+        _ -> {:error, :invalid_response}
+      end
+    else
+      {:error, :frame_too_large}
+    end
   end
 
   defp deadline, do: System.monotonic_time(:millisecond) + timeout()
-  defp remaining(deadline), do: max(deadline - System.monotonic_time(:millisecond), 0)
   defp host, do: Application.get_env(:chatchat_client, :tcp_host, "localhost") |> to_charlist()
   defp port, do: Application.get_env(:chatchat_client, :tcp_port, 4040)
   defp timeout, do: Application.get_env(:chatchat_client, :request_timeout, 10_000)
-
-  defp decode(line), do: Jason.decode(String.trim_trailing(line, "\n"))
 end

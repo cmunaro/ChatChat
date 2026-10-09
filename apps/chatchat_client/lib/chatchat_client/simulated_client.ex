@@ -54,6 +54,18 @@ defmodule ChatchatClient.SimulatedClient do
     {:noreply, state}
   end
 
+  def handle_info({:delivery_result, status}, state) when status in [:ok, :failed, :rejected] do
+    index =
+      case status do
+        :ok -> 2
+        :failed -> 3
+        :rejected -> 4
+      end
+
+    :atomics.add(state.result_counts, index, 1)
+    {:noreply, state}
+  end
+
   def handle_info(
         {:DOWN, monitor, :process, client, _reason},
         %{monitor: monitor, client: client} = state
@@ -77,9 +89,15 @@ defmodule ChatchatClient.SimulatedClient do
   defp start_client(state) do
     client =
       if state.user_id do
-        ChatchatClient.run_preprovisioned(state.username, state.user_id)
+        ChatchatClient.run_preprovisioned(state.username, state.user_id,
+          store_server: state.store_server,
+          result_observer: self()
+        )
       else
-        ChatchatClient.run(state.username)
+        ChatchatClient.run(state.username,
+          store_server: state.store_server,
+          result_observer: self()
+        )
       end
 
     register_client(state, client)
@@ -108,8 +126,14 @@ defmodule ChatchatClient.SimulatedClient do
 
   defp send_message(state) do
     case random_recipient(state, 3) do
-      nil -> :ok
-      recipient -> ChatchatClient.send_message(state.client, recipient, state.message)
+      nil ->
+        :ok
+
+      recipient ->
+        result = ChatchatClient.send_message(state.client, recipient, state.message)
+        index = if match?({:ok, _message_id}, result), do: 1, else: 5
+        :atomics.add(state.result_counts, index, 1)
+        result
     end
   end
 
