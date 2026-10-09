@@ -20,7 +20,10 @@ one integration owner if different agents implement separate tasks.
 
 ## 1. Freeze the wire and internal delivery contract
 
-- [ ] Define the new protocol and internal outcomes.
+- [x] Define the new protocol and internal outcomes.
+
+Contract: [MESSAGE_DELIVERY_CONTRACT.md](MESSAGE_DELIVERY_CONTRACT.md). Runtime protocol
+switching remains in tasks 5–7; the existing protocol documentation stays accurate until then.
 
 Primary files: `apps/chatchat_tcp/lib/chatchat_tcp/request_handler.ex`,
 `apps/chatchat_tcp/lib/chatchat_tcp/handler.ex`, `apps/chatchat_client/lib/chatchat_client/socket.ex`,

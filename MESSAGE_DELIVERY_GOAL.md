@@ -4,6 +4,8 @@ Status: agreed implementation target, not a description of current behavior.
 
 Implementation backlog: [Message delivery tasks](MESSAGE_DELIVERY_TASKS.md).
 
+Frozen implementation contract: [Wire frames, limits, and storage](MESSAGE_DELIVERY_CONTRACT.md).
+
 Implement this architecture across the backend and mocked clients. There is no production protocol
 compatibility requirement. Read `AGENTS.md` and the affected implementation before editing.
 `MESSAGE_DELIVERY.md` describes the existing Redis-based lifecycle; this document supersedes that
