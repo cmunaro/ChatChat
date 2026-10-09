@@ -1,7 +1,7 @@
 # Message delivery implementation tasks
 
 Implement [MESSAGE_DELIVERY_GOAL.md](MESSAGE_DELIVERY_GOAL.md). This is the task backlog, not
-authorization to run large simulations or reset data. All tasks start unchecked.
+authorization to run large simulations or reset data. Completion and acceptance evidence are recorded below.
 
 Follow `AGENTS.md`. Preserve unrelated changes. Add migrations, do not rewrite applied migrations.
 Update consumers together when switching the protocol. Do not introduce a permanent dual delivery
@@ -22,8 +22,7 @@ one integration owner if different agents implement separate tasks.
 
 - [x] Define the new protocol and internal outcomes.
 
-Contract: [MESSAGE_DELIVERY_CONTRACT.md](MESSAGE_DELIVERY_CONTRACT.md). Runtime protocol
-switching remains in tasks 5–7; the existing protocol documentation stays accurate until then.
+Contract: [MESSAGE_DELIVERY_CONTRACT.md](MESSAGE_DELIVERY_CONTRACT.md). The backend, mocked clients, and admin protocol reference now use the implemented contract.
 
 Primary files: `apps/chatchat_tcp/lib/chatchat_tcp/request_handler.ex`,
 `apps/chatchat_tcp/lib/chatchat_tcp/handler.ex`, `apps/chatchat_client/lib/chatchat_client/socket.ex`,
@@ -51,7 +50,16 @@ client work to proceed without inventing incompatible frames or storage assumpti
 
 Depends on: 1.
 
-- [ ] Add composite identity and safe pending-message operations.
+- [x] Add composite identity and safe pending-message operations.
+
+Implemented: additive composite-primary-key migration, committed immutable-content insert checks,
+bounded composite inbox pages, receiver-scoped deletes, and broker regression coverage.
+Temporary old-protocol adapters were removed with the coordinated switch.
+Verification on 2026-10-09: formatting, high-priority Credo, and test-environment compilation
+with warnings as errors passed. After starting dedicated disposable services from
+`docker-compose.test.yml`, all test migrations and five broker regression tests passed,
+including independent concurrent transactions, immutable conflicts, composite identity,
+timestamps, page bounds/wrap, and receiver-scoped deletion.
 
 Primary files: `apps/chatchat_broker/lib/chatchat_broker/storage/messages_store.ex`,
 `apps/chatchat_broker/lib/chatchat_broker/storage/schemas/message.ex`, and a new migration under
@@ -75,7 +83,7 @@ dedicated test database without rewriting migration history.
 
 Depends on: 1.
 
-- [ ] Make presence a safe routing hint and connect TCP nodes.
+- [x] Make presence a safe routing hint and connect TCP nodes.
 
 Primary files: `apps/chatchat_tcp/lib/chatchat_tcp/presence.ex`, `presence_routing.ex`,
 `redis_keys.ex`, `application.ex`, `config/runtime.exs`, `Dockerfile`, and `docker-compose.yml`.
@@ -98,7 +106,7 @@ and unavailable routes. A small two-node check demonstrates discovery and direct
 
 Depends on: 1.
 
-- [ ] Persist outbox, inbox, and deduplication before network actions.
+- [x] Persist outbox, inbox, and deduplication before network actions.
 
 Primary files: `apps/chatchat_client/lib/chatchat_client.ex`,
 `apps/chatchat_client/lib/chatchat_client/application.ex`, and the smallest needed local storage
@@ -120,7 +128,7 @@ restart recovery, write failure handling, and isolation between simulated users/
 
 Depends on: 1, 2, 3. Integrate the protocol switch with task 7.
 
-- [ ] Replace Redis admission with receipt-or-commit delivery.
+- [x] Replace Redis admission with receipt-or-commit delivery.
 
 Primary files: `apps/chatchat_tcp/lib/chatchat_tcp/request_handler.ex`, `handler.ex`,
 `message_admission.ex`, `message_delivery.ex`, and owning supervised delivery processes.
@@ -146,7 +154,7 @@ Redis payload write and no PostgreSQL message write for confirmed direct deliver
 
 Depends on: 2, 3, 5.
 
-- [ ] Recover stored messages on reconnect and lost wakeups.
+- [x] Recover stored messages on reconnect and lost wakeups.
 
 Primary files: `apps/chatchat_tcp/lib/chatchat_tcp/delivery.ex`, `delivery_queue.ex`,
 `message_delivery.ex`, and connection authentication in `handler.ex`.
@@ -168,7 +176,7 @@ unacknowledged rows, fair progress past stuck messages, worker crashes, and boun
 
 Depends on: 1, 4, 5; stored-delivery proof also requires 6.
 
-- [ ] Switch socket/client/simulator behavior to the new delivery contract.
+- [x] Switch socket/client/simulator behavior to the new delivery contract.
 
 Primary files: `apps/chatchat_client/lib/chatchat_client.ex`, `socket.ex`, `simulated_client.ex`,
 `simulator.ex`, `load_generator.ex`, and existing socket/simulator tests.
@@ -192,7 +200,7 @@ exercise direct and stored delivery through the mocked client.
 
 Depends on: 5, 6, 7.
 
-- [ ] Remove the old lifecycle and make documentation/metrics match the new one.
+- [x] Remove the old lifecycle and make documentation/metrics match the new one.
 
 Primary files: TCP `message_admission.ex`, `message_persistence.ex`, `persistence.ex`,
 `redis_keys.ex`, `application.ex`, `priv/redis/`, configuration, TCP telemetry/PromEx,
@@ -216,7 +224,7 @@ Affected web/metrics checks pass; documentation agrees with actual implemented b
 
 Depends on: 2–8.
 
-- [ ] Run focused failure acceptance and required cross-app checks.
+- [x] Run focused failure acceptance and required cross-app checks.
 
 Deliverables:
 
@@ -236,3 +244,31 @@ Deliverables:
 Acceptance: all goal conditions have evidence, all required checks pass or have an explicit unresolved
 blocker, and repository docs describe the final system. Unresolved required checks prevent claiming
 the architecture implementation complete.
+
+## Completed verification — 2026-10-10
+
+All nine tasks are implemented. Dedicated PostgreSQL and Redis services from
+`docker-compose.test.yml` were used; the additive migration ran successfully.
+
+- Required checks passed: formatting, high-priority Credo, test compilation with warnings
+  as errors, and the full umbrella suite (103 tests: broker 18, auth 2, web 30, TCP 35,
+  client 18). `git diff --check` also passed.
+- Broker coverage proves independent concurrent inserts, immutable conflicts, timestamps,
+  composite identities, bounded pages and scoped deletion.
+- TCP coverage proves direct local/cross-node receipt without message writes, committed
+  fallback, database outage, stale routing/session ACK rejection, sender-node death after
+  commit, ACK/insert races, lost wakeups, receiver restart/deduplication, wrapping fairness,
+  slow queued-frame accounting, saturated wake ingress, and real inbox-worker crash recovery.
+- Presence coverage proves lease replacement/expiry, second-connection rejection, trusted
+  route mapping and Redis outage acquisition/renewal failure. Client tests prove durable
+  ownership, write failure, isolated/exclusive namespaces, bounded store ingress, actual
+  response-timeout retry, disconnect/restart recovery, matching results, duplicate/interleaved
+  receipt ACKs, durable protocol suspension, and simulator result accounting.
+- The named-node `scripts/check_tcp_cluster.exs` fixture passed DNSPoll discovery and direct
+  two-node messaging. Both Compose files passed `config --quiet`. Targeted live-source,
+  configuration and dashboard searches found no retired Redis message ownership or protocol.
+
+Material validation limits: the discovery fixture uses a localhost resolver; actual container
+DNS/replica discovery and a Docker image build were not exercised. No large simulation,
+production deployment, Redis flush, or shared-data reset was run. The isolated test services
+remain available. These limits do not replace the passing small two-node and failure fixtures.

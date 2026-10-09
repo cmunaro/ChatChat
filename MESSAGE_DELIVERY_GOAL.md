@@ -1,6 +1,6 @@
 # Message delivery architecture goal
 
-Status: agreed implementation target, not a description of current behavior.
+Status: implemented; acceptance evidence is recorded in [the backlog](MESSAGE_DELIVERY_TASKS.md).
 
 Implementation backlog: [Message delivery tasks](MESSAGE_DELIVERY_TASKS.md).
 
@@ -8,8 +8,7 @@ Frozen implementation contract: [Wire frames, limits, and storage](MESSAGE_DELIV
 
 Implement this architecture across the backend and mocked clients. There is no production protocol
 compatibility requirement. Read `AGENTS.md` and the affected implementation before editing.
-`MESSAGE_DELIVERY.md` describes the existing Redis-based lifecycle; this document supersedes that
-lifecycle as the target. Update the current documentation when implementation is complete.
+`MESSAGE_DELIVERY.md` describes the implemented receipt-or-commit lifecycle.
 
 ## Ownership and results
 
