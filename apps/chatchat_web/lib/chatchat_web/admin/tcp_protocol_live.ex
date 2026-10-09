@@ -23,10 +23,11 @@ defmodule ChatchatWeb.Admin.TcpProtocolLive do
       </header>
 
       <div class="protocol-intro">
-        The client must authenticate first. Message submission uses two acknowledgements:
-        <code>message_admitted</code> assigns the ID, then <code>message_accepted_ack</code>
-        confirms it. Delivery is at least once until the receiver sends
-        <code>message_delivered_ack</code>.
+        Authenticate first. Commit the client outbox before sending its stable UUID.
+        <code>message_result</code> reports durable receipt or committed PostgreSQL ownership
+        (<code>ok</code>), retryable failure (<code>failed</code>), or permanent rejection
+        (<code>rejected</code>). Save and deduplicate incoming messages by sender and message ID
+        before sending <code>message_delivered_ack</code>. Frames are limited to 4,096 bytes.
       </div>
 
       <section :for={group <- @groups} class="protocol-group">
@@ -70,51 +71,66 @@ defmodule ChatchatWeb.Admin.TcpProtocolLive do
         })
       ]),
       group("Message submission", [
-        frame("send_message", "Client → server", "Requests delivery capacity.", %{
-          type: "send_message",
-          request_id: "7a724ef9-c670-49e2-b992-bd8ceff94d24",
-          user_id: 11,
-          message: "Hello"
-        }),
         frame(
-          "message_admitted",
-          "Server → client",
-          "Reserves capacity and assigns the message ID.",
+          "send_message",
+          "Client → server",
+          "Sends a committed outbox entry; retries keep the message ID.",
           %{
-            type: "message_admitted",
+            type: "send_message",
             request_id: "7a724ef9-c670-49e2-b992-bd8ceff94d24",
-            message_id: "c3945190-a81c-4c80-912f-9bfc788d0651"
+            message_id: "c3945190-a81c-4c80-912f-9bfc788d0651",
+            user_id: 11,
+            message: "Hello"
           }
         ),
-        frame("message_accepted_ack", "Client → server", "Confirms the assigned message ID.", %{
-          type: "message_accepted_ack",
-          request_id: "7a724ef9-c670-49e2-b992-bd8ceff94d24",
-          message_id: "c3945190-a81c-4c80-912f-9bfc788d0651"
-        })
+        frame(
+          "message_result",
+          "Server → client",
+          "Correlates both IDs: ok, failed, or rejected.",
+          %{
+            type: "message_result",
+            request_id: "7a724ef9-c670-49e2-b992-bd8ceff94d24",
+            message_id: "c3945190-a81c-4c80-912f-9bfc788d0651",
+            status: "ok"
+          }
+        )
       ]),
       group("Message delivery", [
-        frame("message", "Server → client", "Delivers a message; deduplicate by message_id.", %{
-          type: "message",
-          message_id: "c3945190-a81c-4c80-912f-9bfc788d0651",
-          from_user_id: 10,
-          message: "Hello"
-        }),
+        frame(
+          "message",
+          "Server → client",
+          "Save content and sender/message identity atomically before ACK.",
+          %{
+            type: "message",
+            message_id: "c3945190-a81c-4c80-912f-9bfc788d0651",
+            from_user_id: 10,
+            message: "Hello",
+            inserted_at: "2026-10-09T10:00:00.000000Z",
+            receipt_id: "26df9a61-b860-4aa7-a982-fac892087538"
+          }
+        ),
         frame(
           "message_delivered_ack",
           "Client → server",
-          "Completes delivery and releases capacity.",
+          "ACK saved duplicates too; receipt is session-scoped.",
           %{
             type: "message_delivered_ack",
-            message_id: "c3945190-a81c-4c80-912f-9bfc788d0651"
+            message_id: "c3945190-a81c-4c80-912f-9bfc788d0651",
+            from_user_id: 10,
+            receipt_id: "26df9a61-b860-4aa7-a982-fac892087538"
           }
         )
       ]),
       group("Errors", [
-        frame("error", "Server → client", "Reports a protocol or admission error.", %{
-          type: "error",
-          error: "overloaded",
-          request_id: "7a724ef9-c670-49e2-b992-bd8ceff94d24"
-        })
+        frame(
+          "error",
+          "Server → client",
+          "Uncorrelated protocol error closes the socket and durably suspends client sends.",
+          %{
+            type: "error",
+            error: "invalid_request"
+          }
+        )
       ])
     ]
   end

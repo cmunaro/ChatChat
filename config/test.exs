@@ -11,13 +11,6 @@ config :chatchat_auth, secret_key_base: secret_key_base
 config :chatchat_tcp,
   redis_url: System.get_env("TEST_REDIS_URL", "redis://localhost:6379/15"),
   delivery: [max_concurrency: 8, batch_size: 128],
-  admission: [
-    max_outstanding: 100_000,
-    pending_ttl: 100,
-    delivery_window: 20_000,
-    persistence_batch_size: 50,
-    persistence_retry_interval: 50
-  ],
   server: [
     transport_options: [ip: {127, 0, 0, 1}, send_timeout: 1_000, sndbuf: 16_384],
     port: 0,

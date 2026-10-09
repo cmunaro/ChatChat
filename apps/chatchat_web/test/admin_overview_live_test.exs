@@ -45,12 +45,12 @@ defmodule ChatchatWeb.Admin.OverviewLiveTest do
     assert body =~ "125"
     assert body =~ "Online users"
     assert body =~ "42"
-    assert body =~ "Messages in delivery"
+    assert body =~ "Active sender attempts"
     assert body =~ "18"
     assert body =~ "Messages in delivery DB"
     assert body =~ "7"
     assert body =~ ~s(id="live-messages")
-    assert body =~ "Live messages"
+    assert body =~ "Confirmed results on this node"
     assert body =~ ~s(aria-expanded="false")
     assert body =~ "User search"
   end
@@ -71,13 +71,13 @@ defmodule ChatchatWeb.Admin.OverviewLiveTest do
 
     assert {:noreply, first} =
              ChatchatWeb.Admin.OverviewLive.handle_info(
-               {:message_admitted, %{message_id: "first", sender_id: 10, recipient_id: 11}},
+               {:message_result, %{message_id: "first", sender_id: 10, recipient_id: 11}},
                socket
              )
 
     assert {:noreply, second} =
              ChatchatWeb.Admin.OverviewLive.handle_info(
-               {:message_admitted, %{message_id: "second", sender_id: 11, recipient_id: 10}},
+               {:message_result, %{message_id: "second", sender_id: 11, recipient_id: 10}},
                first
              )
 
@@ -114,22 +114,29 @@ defmodule ChatchatWeb.Admin.OverviewLiveTest do
            } = refreshed.assigns.message_edges
   end
 
-  test "broadcasts valid Redis message events to admin sessions" do
+  test "broadcasts confirmed local receipt/commit metadata without Redis" do
     Phoenix.PubSub.subscribe(ChatchatWeb.PubSub, "admin:messages")
 
-    payload =
-      Jason.encode!(%{message_id: Ecto.UUID.generate(), sender_id: 12, recipient_id: 13})
+    metadata = %{
+      status: :ok,
+      reason: :receipt,
+      message_id: Ecto.UUID.generate(),
+      sender_id: 12,
+      recipient_id: 13
+    }
 
-    redis_message =
-      {:redix_pubsub, :pubsub, :subscription, :message,
-       %{channel: "chatchat:admin:messages", payload: payload}}
+    assert :ok = ChatchatWeb.Admin.MessageStream.broadcast([], %{count: 1}, metadata, nil)
+    assert_receive {:message_result, %{sender_id: 12, recipient_id: 13, reason: :receipt}}
 
-    state = %{pubsub: :pubsub, subscription: :subscription}
+    assert :ok =
+             ChatchatWeb.Admin.MessageStream.broadcast(
+               [],
+               %{count: 1},
+               %{metadata | status: :failed},
+               nil
+             )
 
-    assert {:noreply, ^state} =
-             ChatchatWeb.Admin.MessageStream.handle_info(redis_message, state)
-
-    assert_receive {:message_admitted, %{sender_id: 12, recipient_id: 13}}
+    refute_receive {:message_result, _}
   end
 
   test "GET /admin redirects an anonymous visitor to the login page" do
@@ -150,7 +157,7 @@ defmodule ChatchatWeb.Admin.OverviewLiveTest do
     assert body =~ "TCP protocol"
     assert body =~ "Newline-delimited JSON"
     assert body =~ "send_message"
-    assert body =~ "message_accepted_ack"
+    assert body =~ "message_result"
     assert body =~ "message_delivered_ack"
     assert body =~ ~s(&quot;type&quot;: &quot;authenticate&quot;)
   end

@@ -10,7 +10,7 @@ defmodule ChatchatWeb.Admin.Stats do
 
     queries = %{
       online_users: ~s|sum(chatchat_tcp_connected_clients{job="#{job}"})|,
-      redis_messages: ~s|max(chatchat_redis_pending_messages{job="#{job}"})|
+      active_attempts: ~s|sum(chatchat_delivery_attempts{job="#{job}"})|
     }
 
     prometheus =
@@ -25,12 +25,12 @@ defmodule ChatchatWeb.Admin.Stats do
       end)
 
     database_messages = MessagesStore.count_undelivered()
-    redis_messages = Map.get(prometheus, :redis_messages)
+    active_attempts = Map.get(prometheus, :active_attempts)
 
     %{
       registered_users: AccountsStore.count_users(),
       online_users: Map.get(prometheus, :online_users),
-      messages_in_delivery: add_if_available(redis_messages, database_messages),
+      messages_in_delivery: active_attempts,
       messages_in_database: database_messages,
       updated_at: DateTime.utc_now()
     }
@@ -65,7 +65,4 @@ defmodule ChatchatWeb.Admin.Stats do
       {:error, _reason} -> nil
     end
   end
-
-  defp add_if_available(nil, _database_messages), do: nil
-  defp add_if_available(redis_messages, database_messages), do: redis_messages + database_messages
 end

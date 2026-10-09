@@ -31,13 +31,6 @@ config :chatchat_tcp,
   metrics_server: [ip: {0, 0, 0, 0}, port: 9568],
   presence_routing: [node_id: "local", heartbeat_ttl: 30_000, heartbeat_interval: 10_000],
   delivery: [max_concurrency: 64, batch_size: 128],
-  admission: [
-    max_outstanding: 100_000,
-    pending_ttl: 60_000,
-    delivery_window: 20_000,
-    persistence_batch_size: 500,
-    persistence_retry_interval: 1_000
-  ],
   server: [
     transport_options: [ip: {0, 0, 0, 0}, send_timeout: 1_000, sndbuf: 16_384],
     port: 4040,

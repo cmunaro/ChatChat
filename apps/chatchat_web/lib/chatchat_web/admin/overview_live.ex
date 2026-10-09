@@ -34,7 +34,7 @@ defmodule ChatchatWeb.Admin.OverviewLive do
     {:noreply, refresh(socket)}
   end
 
-  def handle_info({:message_admitted, event}, socket) do
+  def handle_info({:message_result, event}, socket) do
     {:noreply, update_message_graph(socket, event)}
   end
 
@@ -93,9 +93,9 @@ defmodule ChatchatWeb.Admin.OverviewLive do
         />
         <.metric_card
           id="messages-in-delivery"
-          label="Messages in delivery"
+          label="Active sender attempts"
           value={@stats.messages_in_delivery}
-          detail="Redis and PostgreSQL backlog"
+          detail="Direct receipt and PostgreSQL fallback backlog"
         />
         <.metric_card
           id="messages-in-database"
@@ -118,7 +118,7 @@ defmodule ChatchatWeb.Admin.OverviewLive do
             <span class={[@messages_open && "open", "disclosure-icon"]} aria-hidden="true"></span>
             <div>
               <p class="eyebrow">Traffic</p>
-              <h2>Live messages</h2>
+              <h2>Confirmed results on this node</h2>
             </div>
           </div>
           <div class="stream-state">
