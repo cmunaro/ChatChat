@@ -1,9 +1,10 @@
 defmodule ChatchatBroker.Storage.Schemas.Message do
   use Ecto.Schema
 
-  @primary_key {:message_id, Ecto.UUID, autogenerate: false}
+  @primary_key false
   schema "messages" do
-    field :sender_id, :integer
+    field :message_id, Ecto.UUID, primary_key: true
+    field :sender_id, :integer, primary_key: true
     field :receiver_id, :integer
     field :payload, :binary
     field :inserted_at, :utc_datetime_usec
