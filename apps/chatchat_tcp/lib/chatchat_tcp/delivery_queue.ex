@@ -1,20 +1,16 @@
 defmodule ChatchatTcp.DeliveryQueue do
-  @moduledoc "FIFO receiver scheduling with deduplication and recovery priority."
-
+  @moduledoc "FIFO inbox receiver scheduling with deduplicated wakeups."
   def new, do: %{order: :queue.new(), entries: %{}}
   def size(queue), do: map_size(queue.entries)
 
-  def put(queue, receiver, kind) do
-    case queue.entries do
-      %{^receiver => {existing, queued_at}} ->
-        strongest = if kind == :recovery, do: :recovery, else: existing
-        %{queue | entries: Map.put(queue.entries, receiver, {strongest, queued_at})}
-
-      _ ->
-        %{
-          order: :queue.in(receiver, queue.order),
-          entries: Map.put(queue.entries, receiver, {kind, System.monotonic_time()})
-        }
+  def put(queue, receiver) do
+    if Map.has_key?(queue.entries, receiver) do
+      queue
+    else
+      %{
+        order: :queue.in(receiver, queue.order),
+        entries: Map.put(queue.entries, receiver, System.monotonic_time())
+      }
     end
   end
 
@@ -24,8 +20,8 @@ defmodule ChatchatTcp.DeliveryQueue do
         :empty
 
       {{:value, receiver}, order} ->
-        {{kind, queued_at}, entries} = Map.pop!(queue.entries, receiver)
-        {:ok, receiver, kind, queued_at, %{order: order, entries: entries}}
+        {queued_at, entries} = Map.pop!(queue.entries, receiver)
+        {:ok, receiver, queued_at, %{order: order, entries: entries}}
     end
   end
 end
