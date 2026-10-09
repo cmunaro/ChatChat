@@ -1,9 +1,7 @@
 # Delivery implementation contract
 
-Task 1 of [the backlog](MESSAGE_DELIVERY_TASKS.md), implementing
-[the goal](MESSAGE_DELIVERY_GOAL.md). This freezes the replacement contract; it is not
-the currently deployed protocol. Switch the handler and all client consumers together in tasks
-5–7. Until then, `/admin/tcp-protocol` and `MESSAGE_DELIVERY.md` describe the existing protocol.
+Implemented contract for [the delivery goal](MESSAGE_DELIVERY_GOAL.md) and
+[implementation backlog](MESSAGE_DELIVERY_TASKS.md). Backend and client use this protocol together.
 
 ## Wire frames
 
@@ -125,13 +123,13 @@ retained copy. Keep tracking metadata fixed-size and bounded by item counts.
 | Direct transmissions | At most 2, second after 500 ms | Coordinator, only with a live reservation |
 | Database operation timeout | 5 seconds | Broker query/transaction and monitored fallback worker |
 | Sender result deadline | 8 seconds | Coordinator; client waits 10 seconds |
-| Active sender attempts / retained bytes | 1,024 / 8 MiB | Atomic admission before payload enqueue |
+| Active sender attempts / retained bytes | 409 / 8 MiB | Atomic admission before payload enqueue |
 | Attempts per sender connection | 16 | Handler admission before coordinator submission |
-| Fallback workers / waiting fallbacks | 32 / 1,024 | Coordinator; waiting work shares attempt/byte budget |
-| Receiver outstanding frames / bytes | 16 / 128 KiB per connection | Shared direct/inbox connection reservation before enqueue |
-| Receiver-node aggregate delivery reservations | 1,024 / 8 MiB | Receiver node, before remote or local payload transfer |
+| Fallback workers / waiting fallbacks | 32 / 409 | Coordinator; waiting work shares attempt/byte budget |
+| Receiver outstanding frames / bytes | 16 / 192 KiB per connection | Shared direct/inbox connection reservation before enqueue |
+| Receiver-node aggregate delivery reservations | 682 / 8 MiB | Receiver node, before remote or local payload transfer |
 | Inbox workers / pending receivers | 64 / 4,096 | Delivery scheduler, coalesced wakeups |
-| Inbox page / aggregate loaded inbox bytes | 128 rows / 8 MiB | Broker bounded query and scheduler reservation |
+| Inbox page / aggregate loaded inbox bytes | 16 rows / 8 MiB | Broker bounded query and scheduler reservation |
 | Stored receipt lifetime / resend interval | 10 / 10 seconds | Inbox scheduler; release permits and revisit rows |
 | Reconciliation | Every 30 seconds, staggered | Local registered users in bounded batches of 128 |
 | Client outstanding sends / loaded page | 16 / 128 entries per user | Client scheduler and durable-store page queries |
@@ -156,7 +154,7 @@ once; any concurrent running write retains its reservations until exit.
 Bound mailbox ingress with reservations, not casts followed by queue-length checks. Local
 producers acquire atomic count/byte permits before sending payloads. Across nodes, request a
 small permit asynchronously before transmitting a payload; cap pending permit requests at
-1,024 at the origin, apply receiver admission, and expire unused permits after 2 seconds.
+409 at the origin, apply receiver admission, and expire unused permits after 2 seconds.
 No blocking remote calls in handlers. Sender requests, remote permits, direct sends, and inbox
 delivery share their respective budgets, including already-enqueued work. Gate socket reads
 with active-once/transport flow control; a slow socket has finite send timeout (1 second) and
@@ -177,7 +175,7 @@ indexed by authenticated user. This small dependency provides transactions, inde
 and crash recovery without loading all deduplication records or opening one file per user.
 OTP DETS would impose a 2 GiB file limit and require custom transactional/index maintenance.
 
-Use a single supervised store owner and one SQLite connection per client application, with
+Use one supervised store owner and SQLite connection per namespace, with
 WAL mode and `synchronous=FULL`. Commit outbox rows before any network send. An inbox row
 with primary key `(user_id, sender_id, message_id)` holds payload and deduplication together;
 one transaction inserts or verifies the existing immutable content before permitting ACK.
@@ -198,7 +196,8 @@ backpressure/errors rather than an unbounded GenServer mailbox. SQLITE_BUSY, dis
 or corruption errors surface as storage failures: no send before outbox commit, no ACK before
 inbox commit, no destructive recovery. Database growth is on disk; loaded pages, connection
 count, and writes remain bounded. Validate SQLite durability and restart behavior with focused
-tests when adding the dependency; no storage implementation is claimed by this contract.
+tests. The interactive namespace plus at most 16 simulations bounds each application to 17
+store connections; each simulation owns a separate namespace to preserve concurrent runs.
 
 ## Contract review
 
@@ -206,4 +205,12 @@ Goal acceptance 1–2 maps to receipt/commit results; 3–4 to durable client tr
 5 to exact receipt/session tracking; 6 to broker uniqueness and immutable checks; 7 to bounded
 attempts and retained fallback rows; 8–9 to post-commit wakeups and wrapping reconciliation;
 10 to admission before enqueue and shared byte/count budgets. Tasks 2–9 supply executable
-proof. This document completes the design prerequisite without switching runtime behavior.
+proof. The runtime and regression tests implement this contract.
+
+Sender permits reserve 20 KiB per attempt; receiver permits reserve 12 KiB per frame,
+including retained copies and metadata. Inbox pages reserve 20 KiB per row. Queued frames
+retain permits after expiry until consumed/discarded or the handler dies. Origin permits
+remain until receiver transport consumption is confirmed or its coordinator dies. The
+one-for-all delivery supervision group restarts coordinators, workers, scheduler, and
+connection producers together. Wake ingress, pending receivers, retry timers, and cursor
+metadata each have a separate 4,096-item bound.
