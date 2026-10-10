@@ -6,6 +6,7 @@ defmodule ChatchatTcp.PromEx do
     [
       {PromEx.Plugins.Application, otp_app: :chatchat_tcp},
       PromEx.Plugins.Beam,
+      {PromEx.Plugins.Ecto, otp_app: :chatchat_broker, repos: [ChatchatBroker.Repo]},
       ChatchatTcp.PromEx.MessagePlugin
     ]
   end

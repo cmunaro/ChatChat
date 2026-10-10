@@ -25,8 +25,69 @@ defmodule ChatchatTcp.PromEx.MessagePlugin do
           measurement: :count,
           description: "Accepted TCP connections."
         )
-      ] ++ collection_metrics()
+      ] ++ collection_metrics() ++ diagnostic_metrics()
     )
+  end
+
+  @buckets [1, 5, 10, 25, 50, 100, 250, 500, 1_000, 2_000, 5_000, 10_000]
+
+  defp diagnostic_metrics do
+    [
+      distribution([:chatchat, :delivery, :stage, :duration, :milliseconds],
+        event_name: [:chatchat, :delivery, :stage],
+        measurement: :duration,
+        tags: [:stage, :phase, :outcome],
+        unit: {:native, :millisecond},
+        reporter_options: [buckets: @buckets],
+        description: "Delivery stage duration; queue/schedule exclude worker execution."
+      ),
+      counter([:chatchat, :delivery, :stage, :total],
+        event_name: [:chatchat, :delivery, :stage],
+        measurement: :count,
+        tags: [:stage, :phase, :outcome],
+        description: "Observed delivery stage outcomes."
+      ),
+      counter([:chatchat, :tcp, :disconnections, :total],
+        event_name: [:chatchat, :tcp, :connection, :closed],
+        measurement: :count,
+        tags: [:reason],
+        description: "TCP connection closures by bounded reason."
+      ),
+      distribution([:chatchat, :redis, :pipeline, :duration, :milliseconds],
+        event_name: [:redix, :pipeline, :stop],
+        measurement: :duration,
+        tags: [:operation, :outcome],
+        tag_values: &redis_tags/1,
+        drop: &other_redis?/1,
+        unit: {:native, :millisecond},
+        reporter_options: [buckets: @buckets],
+        description: "TCP Redis round-trip latency, including failed calls."
+      ),
+      counter([:chatchat, :redis, :pipeline, :failures, :total],
+        event_name: [:redix, :pipeline, :stop],
+        measurement: fn _measurements -> 1 end,
+        tags: [:operation],
+        tag_values: &redis_tags/1,
+        drop: fn metadata -> other_redis?(metadata) or metadata[:kind] != :error end,
+        description: "TCP Redis pipeline failures."
+      )
+    ]
+  end
+
+  defp other_redis?(metadata), do: metadata[:connection_name] != ChatchatTcp.Redis
+
+  defp redis_tags(metadata) do
+    operation =
+      case metadata[:commands] do
+        [["GET" | _]] -> :get
+        [["EXISTS" | _]] -> :exists
+        [["EVALSHA" | _]] -> :script
+        [["EVAL" | _]] -> :script
+        [_] -> :other
+        _ -> :pipeline
+      end
+
+    %{operation: operation, outcome: if(metadata[:kind] == :error, do: :error, else: :ok)}
   end
 
   defp collection_metrics do

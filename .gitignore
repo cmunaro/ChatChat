@@ -23,3 +23,5 @@ erl_crash.dump
 .env
 # Durable local client ownership is never checked into source control.
 /.client-state/
+# Python diagnostic tool/test imports.
+/observability/__pycache__/

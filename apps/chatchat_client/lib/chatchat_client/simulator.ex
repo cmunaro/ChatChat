@@ -1,7 +1,7 @@
 defmodule ChatchatClient.Simulator do
   use GenServer
 
-  alias ChatchatClient.SimulatedClient
+  alias ChatchatClient.{ConnectionDiagnostics, SimulatedClient}
 
   @defaults %{
     creation_concurrency: 40,
@@ -47,6 +47,7 @@ defmodule ChatchatClient.Simulator do
       options: options,
       supervisor: supervisor,
       result_counts: :atomics.new(5, signed: false),
+      connection_counts: ConnectionDiagnostics.new(),
       clients: clients,
       prefix: prefix,
       started: 0,
@@ -75,6 +76,7 @@ defmodule ChatchatClient.Simulator do
       failed_attempts: :atomics.get(state.result_counts, 3),
       rejected_messages: :atomics.get(state.result_counts, 4),
       submission_failures: :atomics.get(state.result_counts, 5),
+      connection_diagnostics: ConnectionDiagnostics.snapshot(state.connection_counts),
       phase: phase(state)
     }
 
@@ -189,6 +191,7 @@ defmodule ChatchatClient.Simulator do
       simulator: self(),
       clients: state.clients,
       result_counts: state.result_counts,
+      connection_counts: state.connection_counts,
       number_of_clients: state.options.number_of_clients,
       send_probability: state.options.send_message_probability_per_second,
       disconnection_probability: state.options.disconnection_probability_per_second,

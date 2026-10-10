@@ -3,7 +3,7 @@ defmodule ChatchatTcp.MessageDelivery do
   use GenServer
 
   alias ChatchatBroker.Storage.MessagesStore
-  alias ChatchatTcp.{Capacity, Delivery, Presence, Protocol}
+  alias ChatchatTcp.{Capacity, Delivery, Diagnostics, Presence, Protocol}
 
   @sender_gate ChatchatTcp.SenderCapacity
   @receiver_gate ChatchatTcp.ReceiverCapacity
@@ -126,6 +126,8 @@ defmodule ChatchatTcp.MessageDelivery do
         deadline: now + @result_ms,
         direct_deadline: now + @direct_ms,
         phase: :payload,
+        queued_at: nil,
+        direct_started_at: nil,
         completed: false,
         monitor: monitor,
         permits: [],
@@ -558,7 +560,15 @@ defmodule ChatchatTcp.MessageDelivery do
     end
   end
 
-  defp enqueue(reference, state), do: drain(%{state | queue: :queue.in(reference, state.queue)})
+  defp enqueue(reference, state) do
+    attempt = %{state.attempts[reference] | queued_at: Diagnostics.now()}
+
+    drain(%{
+      state
+      | attempts: Map.put(state.attempts, reference, attempt),
+        queue: :queue.in(reference, state.queue)
+    })
+  end
 
   defp drain(state) do
     if map_size(state.jobs) < @workers do
@@ -590,35 +600,44 @@ defmodule ChatchatTcp.MessageDelivery do
     parent = self()
     remaining = min(5_000, max(attempt.deadline - now(), 1))
     phase = attempt.phase
+    Diagnostics.elapsed(attempt.queued_at, :queue, phase, :dispatched)
+    submitted_at = Diagnostics.now()
 
     task =
       Task.Supervisor.async_nolink(ChatchatTcp.Delivery.TaskSupervisor, fn ->
+        Diagnostics.elapsed(submitted_at, :schedule, phase, :started)
+
         case phase do
           :routing ->
-            Presence.route(attempt.receiver)
+            Diagnostics.measure(:route, :routing, fn -> Presence.route(attempt.receiver) end)
 
           :fallback ->
             result =
-              MessagesStore.insert_pending(
-                %{
-                  sender_id: attempt.sender_id,
-                  message_id: attempt.id,
-                  receiver_id: attempt.receiver,
-                  payload: attempt.message
-                },
-                remaining
-              )
+              Diagnostics.measure(:persist, :fallback, fn ->
+                MessagesStore.insert_pending(
+                  %{
+                    sender_id: attempt.sender_id,
+                    message_id: attempt.id,
+                    receiver_id: attempt.receiver,
+                    payload: attempt.message
+                  },
+                  remaining
+                )
+              end)
 
             if match?({:ok, _}, result) do
               send(parent, {:committed, reference, result})
-              wake_current_receiver(attempt.receiver)
+
+              Diagnostics.measure(:wake, :fallback, fn ->
+                wake_current_receiver(attempt.receiver)
+              end)
             end
 
             result
         end
       end)
 
-    attempt = %{attempt | job: task.ref}
+    attempt = %{attempt | job: task.ref, queued_at: nil}
 
     %{
       state
@@ -647,7 +666,7 @@ defmodule ChatchatTcp.MessageDelivery do
 
             attempt =
               Map.put(
-                %{attempt | phase: :direct, job: nil},
+                %{attempt | phase: :direct, job: nil, direct_started_at: Diagnostics.now()},
                 :route,
                 route
               )
@@ -697,7 +716,8 @@ defmodule ChatchatTcp.MessageDelivery do
   defp fallback(state, reference) do
     case state.attempts[reference] do
       %{completed: false, phase: phase, job: nil} = attempt when phase in [:direct, :routing] ->
-        attempt = %{attempt | phase: :fallback}
+        Diagnostics.elapsed(attempt.direct_started_at, :direct_wait, :direct, :fallback)
+        attempt = %{attempt | phase: :fallback, direct_started_at: nil}
         enqueue(reference, %{state | attempts: Map.put(state.attempts, reference, attempt)})
 
       _ ->
@@ -712,6 +732,9 @@ defmodule ChatchatTcp.MessageDelivery do
           if status == :ok and now() >= attempt.deadline,
             do: {:failed, :unavailable},
             else: {status, reason}
+
+        Diagnostics.elapsed(attempt.queued_at, :queue, attempt.phase, :abandoned)
+        Diagnostics.elapsed(attempt.direct_started_at, :direct_wait, :direct, status)
 
         if attempt.sender do
           wire_reason = if status == :ok, do: nil, else: reason
@@ -739,7 +762,7 @@ defmodule ChatchatTcp.MessageDelivery do
           remote_send(coordinator, {:"$gen_cast", {:release_receipt, receipt}})
         end)
 
-        attempt = %{attempt | completed: true}
+        attempt = %{attempt | completed: true, queued_at: nil, direct_started_at: nil}
 
         state = %{
           state

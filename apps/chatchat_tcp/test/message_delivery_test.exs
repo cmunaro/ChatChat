@@ -34,6 +34,7 @@ defmodule ChatchatTcp.MessageDeliveryTest do
          sender: sender,
          receiver: receiver
        } do
+    observe_stages()
     from = connect(sender.id)
     to = connect(receiver.id)
     request = request(receiver.id)
@@ -71,6 +72,12 @@ defmodule ChatchatTcp.MessageDeliveryTest do
              Redix.command(ChatchatTcp.Redis, ["GET", "chatchat:message:#{request.message_id}"])
 
     eventually(fn -> MessageDelivery.metric_snapshot().attempts == 0 end)
+    assert_stage(:queue, :dispatched)
+    assert_stage(:schedule, :started)
+    assert_stage(:route, :ok)
+    assert_stage(:direct_wait, :ok)
+    refute_receive {:stage, _, %{stage: :direct_wait}}, 30
+    refute_receive {:stage, _, %{stage: :persist}}, 30
   end
 
   test "offline commit and reconnect recover ownership with scoped deletion", %{
@@ -78,10 +85,14 @@ defmodule ChatchatTcp.MessageDeliveryTest do
     receiver: receiver,
     other: other
   } do
+    observe_stages()
     from = connect(sender.id)
     request = request(receiver.id)
     send_json(from, request)
     assert {:ok, %{"status" => "ok"}} = recv(from)
+    assert_stage(:route, :error)
+    assert_stage(:persist, :ok)
+    assert_stage(:wake, :ok)
 
     assert %Message{payload: "hello"} =
              Repo.get_by!(Message, sender_id: sender.id, message_id: request.message_id)
@@ -120,12 +131,17 @@ defmodule ChatchatTcp.MessageDeliveryTest do
     sender: sender,
     receiver: receiver
   } do
+    observe_stages()
     from = connect(sender.id)
     to = connect(receiver.id)
     request = request(receiver.id)
     send_json(from, request)
     assert {:ok, direct} = recv(to)
     assert {:ok, %{"status" => "ok"}} = recv(from, 4_000)
+    assert_stage(:direct_wait, :fallback)
+    assert_stage(:persist, :ok)
+    assert_stage(:wake, :ok)
+    refute_receive {:stage, _, %{stage: :direct_wait}}, 30
     assert Repo.get_by(Message, sender_id: sender.id, message_id: request.message_id)
     acknowledge(to, direct)
     Process.sleep(20)
@@ -182,9 +198,12 @@ defmodule ChatchatTcp.MessageDeliveryTest do
   end
 
   test "permanent invalid receiver does not become retryable failure", %{sender: sender} do
+    observe_stages()
     from = connect(sender.id)
     send_json(from, request(9_223_372_036_854_775_807))
     assert {:ok, %{"status" => "rejected", "reason" => "invalid_receiver"}} = recv(from)
+    assert_stage(:persist, :error)
+    refute_receive {:stage, _, %{stage: :wake}}, 30
   end
 
   test "coalesced lost-wakeup reconciliation recovers a committed row", %{
@@ -525,6 +544,20 @@ defmodule ChatchatTcp.MessageDeliveryTest do
       user_id: receiver,
       message: "hello"
     }
+
+  def forward_stage(_event, measurements, metadata, owner),
+    do: send(owner, {:stage, measurements, metadata})
+
+  defp observe_stages do
+    id = make_ref()
+    :telemetry.attach(id, [:chatchat, :delivery, :stage], &__MODULE__.forward_stage/4, self())
+    on_exit(fn -> :telemetry.detach(id) end)
+  end
+
+  defp assert_stage(stage, outcome) do
+    assert_receive {:stage, %{duration: duration}, %{stage: ^stage, outcome: ^outcome}}, 1_000
+    assert duration >= 0
+  end
 
   defp connect(user) do
     {:ok, socket} =

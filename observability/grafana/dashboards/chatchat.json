@@ -5,6 +5,131 @@
   "editable": true,
   "panels": [
     {
+      "id": 29,
+      "title": "Metric availability",
+      "type": "text",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 4
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "Runtime gauges require the freshness collector. **Collector not deployed** means the running TCP image predates it; rebuild application images for the next run. Legacy readings below have **unverified collection freshness** and can freeze under load. Never sum their connection counts: older nodes each report the cluster total. HAProxy sessions are live backend sockets, including sockets not yet authenticated. Event charts can be empty until matching events occur; HTTP charts exclude unrecognized routes (including metrics scrapes). Task 2 diagnostics require updated TCP images."
+      }
+    },
+    {
+      "id": 30,
+      "title": "TCP sessions (HAProxy)",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 6,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green"
+              }
+            ]
+          },
+          "noValue": "Unknown / stale"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "reduceOptions": {
+          "calcs": [
+            "last"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(haproxy_server_current_sessions{proxy=\"chatchat_tcp_nodes\"} and on (job, instance) (up{job=\"haproxy\"} == 1))",
+          "instant": true
+        }
+      ],
+      "description": "Live backend socket count from HAProxy, not authenticated-client count. Requires exporter up."
+    },
+    {
+      "id": 31,
+      "title": "Legacy runtime readings \u2014 freshness unverified",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 6,
+        "y": 4,
+        "w": 18,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "noValue": "No legacy exporters"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(chatchat_tcp_connected_clients{job=\"chatchat_tcp\"} and on (job, instance) (up{job=\"chatchat_tcp\"} == 1)) unless on (job, instance) chatchat_runtime_collection_success",
+          "legendFormat": "Cluster clients {{instance}}"
+        },
+        {
+          "refId": "B",
+          "expr": "(chatchat_delivery_active_workers{job=\"chatchat_tcp\"} and on (job, instance) (up{job=\"chatchat_tcp\"} == 1)) unless on (job, instance) chatchat_runtime_collection_success",
+          "legendFormat": "Inbox workers {{instance}}"
+        },
+        {
+          "refId": "C",
+          "expr": "(chatchat_delivery_pending_receivers{job=\"chatchat_tcp\"} and on (job, instance) (up{job=\"chatchat_tcp\"} == 1)) unless on (job, instance) chatchat_runtime_collection_success",
+          "legendFormat": "Pending receivers {{instance}}"
+        },
+        {
+          "refId": "D",
+          "expr": "(chatchat_delivery_attempts{job=\"chatchat_tcp\"} and on (job, instance) (up{job=\"chatchat_tcp\"} == 1)) unless on (job, instance) chatchat_runtime_collection_success",
+          "legendFormat": "Sender attempts {{instance}}"
+        },
+        {
+          "refId": "E",
+          "expr": "(chatchat_postgres_undelivered_messages{job=\"chatchat_tcp\"} and on (job, instance) (up{job=\"chatchat_tcp\"} == 1)) unless on (job, instance) chatchat_runtime_collection_success",
+          "legendFormat": "Database pending {{instance}}"
+        }
+      ],
+      "description": "Compatibility view only for exporters without collection health. Values may be frozen even while scraping succeeds. Kept per exporter to avoid double-counting cluster-wide legacy gauges."
+    },
+    {
       "id": 1,
       "title": "Service health",
       "type": "stat",
@@ -16,7 +141,7 @@
         "h": 5,
         "w": 6,
         "x": 0,
-        "y": 0
+        "y": 12
       },
       "fieldConfig": {
         "defaults": {
@@ -82,7 +207,7 @@
         "h": 5,
         "w": 6,
         "x": 6,
-        "y": 0
+        "y": 12
       },
       "fieldConfig": {
         "defaults": {
@@ -134,7 +259,7 @@
         "h": 5,
         "w": 6,
         "x": 12,
-        "y": 0
+        "y": 12
       },
       "fieldConfig": {
         "defaults": {
@@ -200,7 +325,7 @@
         "h": 5,
         "w": 6,
         "x": 18,
-        "y": 0
+        "y": 12
       },
       "fieldConfig": {
         "defaults": {
@@ -247,7 +372,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 5
+        "y": 17
       },
       "fieldConfig": {
         "defaults": {
@@ -284,7 +409,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 5
+        "y": 17
       },
       "fieldConfig": {
         "defaults": {
@@ -321,7 +446,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 13
+        "y": 25
       },
       "fieldConfig": {
         "defaults": {
@@ -358,7 +483,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 13
+        "y": 25
       },
       "fieldConfig": {
         "defaults": {
@@ -407,7 +532,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 21
+        "y": 33
       },
       "fieldConfig": {
         "defaults": {
@@ -469,7 +594,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 21
+        "y": 33
       },
       "fieldConfig": {
         "defaults": {
@@ -512,7 +637,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 29
+        "y": 41
       },
       "fieldConfig": {
         "defaults": {
@@ -564,7 +689,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 29
+        "y": 41
       },
       "fieldConfig": {
         "defaults": {
@@ -616,7 +741,7 @@
         "h": 5,
         "w": 12,
         "x": 0,
-        "y": 37
+        "y": 49
       },
       "fieldConfig": {
         "defaults": {
@@ -669,7 +794,7 @@
         "h": 5,
         "w": 12,
         "x": 12,
-        "y": 37
+        "y": 49
       },
       "fieldConfig": {
         "defaults": {
@@ -722,7 +847,7 @@
         "h": 7,
         "w": 8,
         "x": 0,
-        "y": 42
+        "y": 54
       },
       "fieldConfig": {
         "defaults": {
@@ -742,7 +867,7 @@
       },
       "targets": [
         {
-          "expr": "rate(chatchat_tcp_connections_total[$__rate_interval]) or vector(0)",
+          "expr": "rate(chatchat_tcp_connections_total{job=\"chatchat_tcp\"}[$__rate_interval])",
           "legendFormat": "Connections/s",
           "refId": "A"
         }
@@ -760,7 +885,7 @@
         "h": 7,
         "w": 8,
         "x": 8,
-        "y": 42
+        "y": 54
       },
       "fieldConfig": {
         "defaults": {
@@ -799,7 +924,7 @@
         "h": 7,
         "w": 8,
         "x": 16,
-        "y": 42
+        "y": 54
       },
       "fieldConfig": {
         "defaults": {
@@ -836,7 +961,7 @@
         "h": 6,
         "w": 8,
         "x": 0,
-        "y": 49
+        "y": 61
       },
       "fieldConfig": {
         "defaults": {
@@ -902,7 +1027,7 @@
         "h": 6,
         "w": 8,
         "x": 8,
-        "y": 49
+        "y": 61
       },
       "fieldConfig": {
         "defaults": {
@@ -922,7 +1047,7 @@
       },
       "targets": [
         {
-          "expr": "haproxy_server_current_sessions{proxy=\"chatchat_tcp_nodes\"}",
+          "expr": "haproxy_server_current_sessions{proxy=\"chatchat_tcp_nodes\"} and on (job, instance, proxy, server) (haproxy_server_status{proxy=\"chatchat_tcp_nodes\",state=\"UP\"} == 1)",
           "legendFormat": "{{server}}",
           "refId": "A"
         }
@@ -940,7 +1065,7 @@
         "h": 6,
         "w": 8,
         "x": 16,
-        "y": 49
+        "y": 61
       },
       "fieldConfig": {
         "defaults": {
@@ -978,9 +1103,9 @@
         "h": 5,
         "w": 24,
         "x": 0,
-        "y": 55
+        "y": 67
       },
-      "description": "Fresh means collection succeeded within 15 seconds and exporter is up. Failed, expired, or missing collections are shown per discovered node/source. No discovered exporters means Unknown / stale.",
+      "description": "Freshness is available only in rebuilt TCP images. Collector not deployed means this exporter lacks source health metrics; failed/stale means collection failed, expired, or exporter is down.",
       "fieldConfig": {
         "defaults": {
           "noValue": "Unknown / stale",
@@ -995,11 +1120,15 @@
                 "1": {
                   "text": "Fresh",
                   "color": "green"
+                },
+                "-1": {
+                  "text": "Collector not deployed",
+                  "color": "orange"
                 }
               }
             }
           ],
-          "min": 0,
+          "min": -1,
           "max": 1
         },
         "overrides": []
@@ -1017,12 +1146,302 @@
       },
       "targets": [
         {
-          "expr": "((chatchat_runtime_collection_success == bool 1) * on (job, instance, source) (time() - chatchat_runtime_collection_last_success_timestamp_seconds < bool 15) * on (job, instance) group_left() up{job=\"chatchat_tcp\"}) or on (job, instance, source) (label_replace(0 * up{job=\"chatchat_tcp\"}, \"source\", \"connections\", \"job\", \".*\") or label_replace(0 * up{job=\"chatchat_tcp\"}, \"source\", \"inbox\", \"job\", \".*\") or label_replace(0 * up{job=\"chatchat_tcp\"}, \"source\", \"sender\", \"job\", \".*\") or label_replace(0 * up{job=\"chatchat_tcp\"}, \"source\", \"postgres\", \"job\", \".*\"))",
+          "expr": "((chatchat_runtime_collection_success == bool 1) * on (job, instance, source) (time() - chatchat_runtime_collection_last_success_timestamp_seconds < bool 15) * on (job, instance) group_left() up{job=\"chatchat_tcp\"}) or on (job, instance, source) (label_replace((-1 * (up{job=\"chatchat_tcp\"} == 1)) or (0 * (up{job=\"chatchat_tcp\"} == 0)), \"source\", \"connections\", \"job\", \".*\") or label_replace((-1 * (up{job=\"chatchat_tcp\"} == 1)) or (0 * (up{job=\"chatchat_tcp\"} == 0)), \"source\", \"inbox\", \"job\", \".*\") or label_replace((-1 * (up{job=\"chatchat_tcp\"} == 1)) or (0 * (up{job=\"chatchat_tcp\"} == 0)), \"source\", \"sender\", \"job\", \".*\") or label_replace((-1 * (up{job=\"chatchat_tcp\"} == 1)) or (0 * (up{job=\"chatchat_tcp\"} == 0)), \"source\", \"postgres\", \"job\", \".*\"))",
           "instant": true,
           "legendFormat": "{{instance}} {{source}}",
           "refId": "A"
         }
       ]
+    },
+    {
+      "id": 22,
+      "title": "Delivery stage p95",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 72
+      },
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "unit": "ms",
+          "noValue": "No observations"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, instance, stage, phase) (rate(chatchat_delivery_stage_duration_milliseconds_bucket{job=\"chatchat_tcp\"}[$__rate_interval])))",
+          "legendFormat": "{{instance}} {{stage}} {{phase}}",
+          "refId": "A"
+        }
+      ],
+      "description": "Elapsed stages overlap; persist includes pool wait and commit. Do not sum stage percentiles. Requires rebuilt TCP image with task 2 instrumentation. No data can also mean no matching events; check Runtime collection health for deployment status."
+    },
+    {
+      "id": 23,
+      "title": "Delivery stage mean",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 72
+      },
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "unit": "ms",
+          "noValue": "No observations"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (instance, stage, phase) (rate(chatchat_delivery_stage_duration_milliseconds_sum{job=\"chatchat_tcp\"}[$__rate_interval])) / sum by (instance, stage, phase) (rate(chatchat_delivery_stage_duration_milliseconds_count{job=\"chatchat_tcp\"}[$__rate_interval]))",
+          "legendFormat": "{{instance}} {{stage}} {{phase}}",
+          "refId": "A"
+        }
+      ],
+      "description": "Queue wait ends at dispatch/abandonment. Schedule delay ends when the worker starts. Direct wait ends on receipt/fallback/finish. Requires rebuilt TCP image with task 2 instrumentation. No data can also mean no matching events; check Runtime collection health for deployment status."
+    },
+    {
+      "id": 24,
+      "title": "Delivery stage outcomes",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 80
+      },
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "unit": "ops",
+          "noValue": "No observations"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (instance, stage, phase, outcome) (rate(chatchat_delivery_stage_total{job=\"chatchat_tcp\"}[$__rate_interval]))",
+          "legendFormat": "{{instance}} {{stage}} {{phase}} {{outcome}}",
+          "refId": "A"
+        }
+      ],
+      "description": "Observed intervals, including failed and abandoned work. Hard-killed workers may not emit their executing stage. Requires rebuilt TCP image with task 2 instrumentation. No data can also mean no matching events; check Runtime collection health for deployment status."
+    },
+    {
+      "id": 25,
+      "title": "TCP disconnect reasons",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 80
+      },
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "unit": "ops",
+          "noValue": "No observations"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (instance, reason) (rate(chatchat_tcp_disconnections_total{job=\"chatchat_tcp\"}[$__rate_interval]))",
+          "legendFormat": "{{instance}} {{reason}}",
+          "refId": "A"
+        }
+      ],
+      "description": "One closure per handler lifecycle; abrupt VM/process kills cannot emit a final callback. Requires rebuilt TCP image with task 2 instrumentation. No data can also mean no matching events; check Runtime collection health for deployment status."
+    },
+    {
+      "id": 26,
+      "title": "TCP Redis latency",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 88
+      },
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "unit": "ms",
+          "noValue": "No observations"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, instance, operation) (rate(chatchat_redis_pipeline_duration_milliseconds_bucket{job=\"chatchat_tcp\"}[$__rate_interval])))",
+          "legendFormat": "{{instance}} {{operation}} p95",
+          "refId": "A"
+        }
+      ],
+      "description": "Redix command/pipeline round trip, including errors. Bounded command categories only. Requires rebuilt TCP image with task 2 instrumentation. No data can also mean no matching events; check Runtime collection health for deployment status."
+    },
+    {
+      "id": 27,
+      "title": "TCP Redis failures",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 88
+      },
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "unit": "ops",
+          "noValue": "No observations"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (instance, operation) (rate(chatchat_redis_pipeline_failures_total{job=\"chatchat_tcp\"}[$__rate_interval]))",
+          "legendFormat": "{{instance}} {{operation}}",
+          "refId": "A"
+        }
+      ],
+      "description": "Failed Redix pipeline calls from the TCP Redis connection. Requires rebuilt TCP image with task 2 instrumentation. No data can also mean no matching events; check Runtime collection health for deployment status."
+    },
+    {
+      "id": 28,
+      "title": "TCP database timing",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 96
+      },
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "unit": "ms",
+          "noValue": "No observations"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, instance) (rate(chatchat_broker_prom_ex_ecto_repo_query_queue_time_milliseconds_bucket{job=\"chatchat_tcp\"}[$__rate_interval])))",
+          "legendFormat": "{{instance}} queue p95",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, instance) (rate(chatchat_broker_prom_ex_ecto_repo_query_execution_time_milliseconds_bucket{job=\"chatchat_tcp\"}[$__rate_interval])))",
+          "legendFormat": "{{instance}} execution p95",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, instance) (rate(chatchat_broker_prom_ex_ecto_repo_query_total_time_milliseconds_bucket{job=\"chatchat_tcp\"}[$__rate_interval])))",
+          "legendFormat": "{{instance}} total p95",
+          "refId": "C"
+        }
+      ],
+      "description": "Existing Ecto metrics restricted to TCP exporters; transaction duration is measured separately by persist. Requires rebuilt TCP image with task 2 instrumentation. No data can also mean no matching events; check Runtime collection health for deployment status."
     }
   ],
   "refresh": "5s",
@@ -1040,5 +1459,5 @@
   "timezone": "browser",
   "title": "ChatChat Overview",
   "uid": "chatchat-overview",
-  "version": 8
+  "version": 10
 }

@@ -83,6 +83,15 @@ Runtime gauges require successful collection within 15 seconds and an exporter
 that is up; unavailable totals display `Unknown / stale`. PostgreSQL pending rows
 use the maximum fresh observation because TCP replicas share the database.
 The runtime collection health panel shows freshness by node and source.
+`Collector not deployed` identifies TCP images built before the freshness collector.
+The dashboard includes a legacy view with unverified freshness, kept per exporter:
+older connection gauges report cluster totals and must not be summed. HAProxy
+session counts provide live backend socket counts, including unauthenticated sockets.
+Task 2 diagnostic charts require rebuilt TCP images. Rebuild application images
+before the next simulation; changing dashboard files does not update running code.
+Do not restart a running stress test merely to enable instrumentation. Empty event
+charts can mean no matching events, and HTTP charts exclude unknown routes such as
+metrics scrapes. The datasource scrape interval matches Prometheus at five seconds.
 
 Validate runtime dashboard queries with synthetic data (requires `promtool`):
 
@@ -90,6 +99,58 @@ Validate runtime dashboard queries with synthetic data (requires `promtool`):
 python3 observability/test_dashboard.py promtool
 # With the existing Prometheus container; no live data is modified:
 python3 observability/test_dashboard.py docker exec -i chatchat-prometheus-1 /bin/promtool
+```
+
+Delivery diagnostics expose queue wait, worker scheduling delay, route lookup,
+direct receipt wait, persistence, and post-commit wakeup time. Queue/schedule are
+tagged by routing or fallback; executing stages include success/error/exception.
+Queue abandonment and direct fallback are recorded once. Persistence includes
+checkout and commit; Redis time overlaps route/wakeup, so do not add stage p95s.
+Hard process kills cannot emit an executing stage's completion or final closure.
+Redix round-trip/failure metrics cover calls that emit its pipeline-stop event:
+transport failures/timeouts are counted; Redis server error replies inside a
+successful pipeline and abrupt connection-process exits are not counted there.
+Route/persistence stage errors provide complementary evidence.
+
+TCP closure reasons distinguish authentication, presence lease failure, idle
+timeout, protocol error, socket error, peer close, shutdown, and other termination.
+Client `simulation_status/1` adds `connection_diagnostics` with disconnect reasons,
+reconnect attempt/success/failure counts, and failure stages. Ready wrappers still
+do not imply connected sockets. Diagnostics use fixed labels, without message/user
+IDs, payloads, tokens, or arbitrary error strings. Existing result fields, retry
+intervals, and delivery deadlines remain unchanged.
+
+For a future instrumented run, capture five minutes of read-only diagnostics:
+
+```sh
+python3 observability/capture_diagnostics.py \
+  --tcp-container chatchat-tcp-1 --tcp-container chatchat-tcp-2 \
+  --haproxy-container chatchat-haproxy-1 \
+  --loadgen-container chatchat-loadgen-1 \
+  --resource-container chatchat-postgres-1 --resource-container chatchat-redis-1 \
+  --output tmp/diagnostics-run-1
+```
+
+Repeat `--loadgen-container` for each shard. The output directory must be new.
+Defaults: Prometheus `http://localhost:9090`, five-second interval, 300-second
+duration; optional `--interval`, `--duration`, and `--prometheus` override them.
+Sampling uses four concurrent probes, three-second command/request timeouts,
+bounded response sizes, and at most 32 explicit container targets. Kernel/FD
+probes run at most every 30 seconds; listen-queue sampling examines at most 4,096
+socket rows and explicitly marks truncation. Slow samples skip missed ticks.
+Outputs are `capture.json`, timestamped `samples.jsonl`, and `summary.md`.
+The summary aligns stage means, connection/health rates, queue pressure and CPU;
+raw samples include per-node p95s, client counters, socket/TIME_WAIT totals,
+port ranges, descriptor limits/usage, and listen-overflow counters.
+Missing probes are explicit. Kernel/socket totals alone cannot prove
+per-destination port exhaustion; compare counter deltas and metric freshness.
+No workload or missing new diagnostics leaves attribution pending. The capture
+does not launch traffic, provision users, change settings, or read environments.
+
+Test capture behavior without services:
+
+```sh
+python3 -m unittest discover -s observability -p 'test_capture*.py'
 ```
 
 ## Client simulation

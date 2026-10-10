@@ -54,6 +54,11 @@ defmodule ChatchatClient.SimulatedClient do
     {:noreply, state}
   end
 
+  def handle_info({:connection_diagnostic, event}, state) do
+    ChatchatClient.ConnectionDiagnostics.record(state.connection_counts, event)
+    {:noreply, state}
+  end
+
   def handle_info({:delivery_result, status}, state) when status in [:ok, :failed, :rejected] do
     index =
       case status do

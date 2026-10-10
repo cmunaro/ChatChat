@@ -150,3 +150,104 @@ Relevant delivery, presence, client ping/reconnect, storage, and metric collecti
 code was inspected. No behavior changes were implemented and no runtime tests were
 run. This document proposes follow-up work; it does not claim the overload is fixed
 or prove message loss, database corruption, or one exclusive root cause.
+
+## Dashboard audit during the subsequent run
+
+The TCP exporters and web/HAProxy scrapes were healthy. Both running TCP images
+lacked `ChatchatTcp.PromEx.RuntimeCollector` and `ChatchatTcp.Diagnostics` (verified
+with read-only release RPC). The bind-mounted dashboard was newer than the images:
+its freshness filters removed legacy gauges, and task 2 diagnostic series did not
+exist. Successful scrapes alone cannot establish legacy collector freshness.
+Legacy connection readings on both nodes initially duplicated the cluster count;
+adding them would double-count clients. Other legacy readings can freeze under
+load. Sender-result and database query series had no live observations at the audit;
+web observations were only unknown routes, deliberately excluded by HTTP charts.
+
+The dashboard now labels missing collectors explicitly, provides legacy readings
+per exporter with a freshness warning, and shows live HAProxy backend socket totals.
+The backend chart filters out unused HAProxy server slots (100 slots were previously
+shown for two active nodes). The datasource now declares the five-second scrape
+interval. Dashboard and datasource provisioning were reloaded in Grafana only;
+TCP nodes and load generators were not restarted. Live queries confirmed the new
+panels returned values and identified all eight missing source collectors.
+
+Freshness-protected runtime totals and new diagnostics remain unavailable until
+application images containing tasks 1 and 2 are rebuilt and deployed for a future
+run. Do not treat legacy values as validated measurements or missing events as
+zero. Synthetic promtool coverage verifies legacy deployment detection, exclusion
+of modern exporters from the legacy view, active HAProxy slots, and existing
+fresh/stale/failure behavior.
+
+## Instrumented long-running run: 18:04–18:05 UTC
+
+Read-only capture on 2026-10-10; raw samples and capture metadata are in
+`/tmp/chatchat-live-performance-20261010/`. The four scheduled samples span
+45 seconds within a 60-second capture. No containers, simulation settings, or
+resource limits were changed. This is a subsequent deployment: release RPC now
+confirms the TCP freshness collector is loaded and task 2 metrics are emitted.
+The six client images still lack connection diagnostics.
+
+### Observed degradation
+
+- All six shards reported running with 20,000 ready clients each. This is 120,000
+  simulation members, not 120,000 authenticated sockets.
+- Reported local authenticated connections fell from 55,920 to 26,369 in 45 seconds.
+  Scrapes are not atomic; one intermediate sample lacked one node's connection gauge.
+- Combined client counters increased by 45,695 queued messages, 1,721 confirmed
+  attempts, 63,028 failed attempts, and 171 submission failures: approximately
+  1,015 queued/s, 38 confirmed/s, and 1,401 failed attempts/s. Attempts include retries;
+  these counters cannot establish a unique-message loss percentage.
+- Both nodes reported 409 active attempts, 377 waiting attempts, and 32 workers.
+  Queue p95 was approximately 4.25–4.97 seconds; scheduling p95 was 3.6–4.3 ms.
+  Routing p95 was 88–95 ms and fallback persistence p95 was 55–71 ms.
+- Near the last sample, presence-unavailable disconnects totaled approximately
+  1,819/s across both nodes. Authentication timeouts and rejections also occurred.
+- Read-only process snapshots found 21,193 queued messages in TCP2's shared Redix
+  process and 56,130 in TCP1's. Delivery coordinator mailboxes contained hundreds
+  to thousands of messages; both TCP1 metric snapshot calls timed out at one second.
+- Redis client script round-trip p95 was approximately 4.6–6.5 seconds. Redis INFO
+  showed lifetime average EVALSHA execution of 6.55 microseconds and GET execution
+  of 0.59 microseconds, no evictions, and no rejected connections. These averages do
+  not rule out transient Redis stalls, but strongly distinguish server execution
+  from the observed client/runtime queueing.
+- Each TCP BEAM had two online schedulers despite 12 available CPUs. Normal run
+  queues were 31 and 81. All load generators, TCP nodes, and HAProxy share that host;
+  simply increasing every process's CPU allocation would introduce more contention.
+- HAProxy namespace ListenDrops/ListenOverflows increased by 1,058,995; TCP node
+  increases were 65,222 and 63,340. These are cumulative kernel counters, count repeat
+  attempts, and are namespace-wide rather than a proven per-listener attribution.
+  Listener queue probes were truncated and cannot identify the overloaded port.
+  HAProxy used roughly 175% CPU with two configured threads.
+- Sampled HAProxy descriptors were below its 1,048,576 limit; a sampled client was
+  below its 100,000 limit. No TCP memory-pressure events were reported in these
+  samples. This does not establish absence of source-port pressure.
+- Logs contained database checkout/connection timeouts and a PromEx flusher timeout.
+  Sampled database queue p95 was 40–42 ms, execution p95 about 10 ms. A separate
+  PostgreSQL activity snapshot had 28 idle sessions and two short idle transactions.
+  Database saturation alone does not explain the multi-second queues.
+
+### Interpretation and fix priorities
+
+Evidence supports a feedback loop: shared Redix/client scheduling delays threaten
+presence leases, sockets close, reconnect attempts amplify CPU and accept-queue
+pressure, and bounded delivery attempts spend seconds waiting. Node heartbeats,
+session acquisition/renewal/release, and route lookup currently share one named
+Redix connection per TCP node. HAProxy accept pressure is real, but swapping proxy
+software alone cannot fix this application queue.
+
+1. Isolate node-heartbeat traffic from session/route traffic; use a bounded set of
+   supervised Redix connections for session work, assigned consistently by user.
+   Preserve atomic Lua ownership checks, lease expiry, and owner-scoped release.
+   Measure connection mailbox lengths and round-trip tails before increasing pool size.
+2. Spread lease-renewal timing and bound reconnect attempts with backoff and jitter.
+   Preserve conservative lease deadlines and failure behavior; never keep an expired
+   session authorized merely to reduce disconnect counts.
+3. Run load generators on separate CPU capacity for the next baseline and size TCP
+   schedulers explicitly. Compare queue and lease-failure rates under equal traffic.
+4. Correct attempt deadline handling and measure deadline abandonment. Do not raise
+   attempt/worker limits or timeouts as the first response to saturated queues.
+5. After reducing reconnect amplification, measure HAProxy accept/thread pressure
+   and per-listener queues, then size proxy threads/backlogs against available CPU.
+   Increasing backlog alone buffers work and cannot increase sustainable throughput.
+
+These are proposed changes for a future deployment, not fixes applied to this run.

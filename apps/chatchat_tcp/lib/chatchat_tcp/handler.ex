@@ -1,7 +1,7 @@
 defmodule ChatchatTcp.Handler do
   use ThousandIsland.Handler
 
-  alias ChatchatTcp.{Delivery, Presence, PresenceRouting, RequestHandler}
+  alias ChatchatTcp.{Delivery, Diagnostics, Presence, PresenceRouting, RequestHandler}
   alias ThousandIsland.Socket
 
   @impl ThousandIsland.Handler
@@ -13,6 +13,7 @@ defmodule ChatchatTcp.Handler do
     state = %{
       buffer: "",
       user_id: nil,
+      close_reason: nil,
       presence_deadline: nil,
       session: nil,
       pending_sends: MapSet.new(),
@@ -42,23 +43,39 @@ defmodule ChatchatTcp.Handler do
 
   @impl ThousandIsland.Handler
   def handle_timeout(socket, %{user_id: nil}) do
+    Diagnostics.connection_closed(:authentication_timeout)
     send_json(socket, %{type: "error", error: "authentication_timeout"})
     Socket.close(socket)
   end
 
   def handle_timeout(socket, state) do
+    Diagnostics.connection_closed(:idle_timeout)
     unregister(state)
     Socket.close(socket)
   end
 
   @impl ThousandIsland.Handler
-  def handle_close(_socket, state), do: unregister(state)
+  def handle_close(_socket, state) do
+    Diagnostics.connection_closed(state.close_reason || :peer_close)
+    unregister(state)
+  end
 
   @impl ThousandIsland.Handler
-  def handle_error(_reason, _socket, state), do: unregister(state)
+  def handle_error(reason, _socket, state) do
+    fallback =
+      if reason in [:closed, :econnreset, :etimedout, :econnaborted, :enotconn, :timeout],
+        do: :socket_error,
+        else: :other
+
+    Diagnostics.connection_closed(state.close_reason || fallback)
+    unregister(state)
+  end
 
   @impl ThousandIsland.Handler
-  def handle_shutdown(_socket, state), do: unregister(state)
+  def handle_shutdown(_socket, state) do
+    Diagnostics.connection_closed(state.close_reason || :shutdown)
+    unregister(state)
+  end
 
   defp process_frames(buffer, socket, state) do
     case :binary.split(buffer, "\n") do
@@ -158,7 +175,15 @@ defmodule ChatchatTcp.Handler do
 
   defp close_with_error(socket, state, reason) do
     send_json(socket, %{type: "error", error: reason})
-    {:close, state}
+
+    close_reason =
+      cond do
+        reason == "presence_unavailable" -> :presence_unavailable
+        is_nil(state.user_id) -> :authentication_rejection
+        true -> :protocol_error
+      end
+
+    {:close, %{state | close_reason: close_reason}}
   end
 
   defp send_json(socket, payload) do
@@ -194,7 +219,7 @@ defmodule ChatchatTcp.Handler do
       _ ->
         unregister(state)
         Socket.close(socket)
-        {:stop, :normal, {socket, state}}
+        {:stop, :normal, {socket, %{state | close_reason: :presence_unavailable}}}
     end
   end
 
@@ -202,7 +227,7 @@ defmodule ChatchatTcp.Handler do
     if System.monotonic_time(:millisecond) >= state.idle_deadline do
       unregister(state)
       Socket.close(socket)
-      {:stop, :normal, {socket, state}}
+      {:stop, :normal, {socket, %{state | close_reason: :idle_timeout}}}
     else
       {:noreply, {socket, state}}
     end
@@ -221,7 +246,7 @@ defmodule ChatchatTcp.Handler do
         _ ->
           ChatchatTcp.MessageDelivery.release_receipt(receipt)
           unregister(state)
-          {:stop, :normal, {socket, state}}
+          {:stop, :normal, {socket, %{state | close_reason: :socket_error}}}
       end
     else
       ChatchatTcp.MessageDelivery.frame_consumed(receipt)

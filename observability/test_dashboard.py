@@ -54,7 +54,7 @@ def scenario(name, *, failed=False, stale=False, missing=False, down=False, zero
         for source in ("connections", "inbox", "sender", "postgres"):
             expected_health.append({
                 "labels": f'{{job="chatchat_tcp",instance="{node}",source="{source}"}}',
-                "value": 0 if all_unavailable or (incomplete and node == "b") else 1,
+                "value": -1 if missing and node == "b" else (0 if all_unavailable or (incomplete and node == "b") else 1),
             })
     tests.append({"expr": queries["health"], "eval_time": "20s", "exp_samples": expected_health})
     return {"name": name, "interval": "1s", "input_series": series, "promql_expr_test": tests}
@@ -69,12 +69,51 @@ tests = [
     scenario("down exporter", down=True),
     scenario("all sources unavailable", all_unavailable=True),
 ]
+# Legacy exporters must be visibly unsupported, never passed as fresh totals.
+legacy_series = [
+    {"series": 'up{job="chatchat_tcp",instance="old"}', "values": "1+0x20"},
+    {"series": 'chatchat_tcp_connected_clients{job="chatchat_tcp",instance="old"}', "values": "7+0x20"},
+]
+tests.append({"name": "legacy deployment", "input_series": legacy_series, "promql_expr_test": [
+    {"expr": queries["connections"], "eval_time": "20s", "exp_samples": []},
+    {"expr": queries["health"], "eval_time": "20s", "exp_samples": [
+        {"labels": '{job="chatchat_tcp",instance="old",source="' + source + '"}', "value": -1}
+        for source in ("connections", "inbox", "sender", "postgres")
+    ]},
+    {"expr": panels["Legacy runtime readings — freshness unverified"]["targets"][0]["expr"],
+     "eval_time": "20s", "exp_samples": [
+         {"labels": '{__name__="chatchat_tcp_connected_clients",job="chatchat_tcp",instance="old"}', "value": 7}
+     ]},
+]})
+tests.append({"name": "modern exporters excluded from legacy view", "input_series": legacy_series + [
+    {"series": 'chatchat_runtime_collection_success{job="chatchat_tcp",instance="old",source="connections"}', "values": "0+0x20"}
+], "promql_expr_test": [{
+    "expr": panels["Legacy runtime readings — freshness unverified"]["targets"][0]["expr"],
+    "eval_time": "20s", "exp_samples": []
+}]})
+tests.append({"name": "HAProxy live sockets and active backends", "input_series": [
+    {"series": 'up{job="haproxy",instance="lb"}', "values": "1+0x20"},
+    {"series": 'haproxy_server_current_sessions{job="haproxy",instance="lb",proxy="chatchat_tcp_nodes",server="tcp1"}', "values": "9+0x20"},
+    {"series": 'haproxy_server_status{job="haproxy",instance="lb",proxy="chatchat_tcp_nodes",server="tcp1",state="UP"}', "values": "1+0x20"},
+    {"series": 'haproxy_server_current_sessions{job="haproxy",instance="lb",proxy="chatchat_tcp_nodes",server="unused"}', "values": "0+0x20"},
+    {"series": 'haproxy_server_status{job="haproxy",instance="lb",proxy="chatchat_tcp_nodes",server="unused",state="UP"}', "values": "0+0x20"},
+], "promql_expr_test": [
+    {"expr": panels["TCP sessions (HAProxy)"]["targets"][0]["expr"], "eval_time": "20s", "exp_samples": [{"labels": "{}", "value": 9}]},
+    {"expr": panels["TCP connections per node"]["targets"][0]["expr"], "eval_time": "20s", "exp_samples": [
+        {"labels": '{__name__="haproxy_server_current_sessions",job="haproxy",instance="lb",proxy="chatchat_tcp_nodes",server="tcp1"}', "value": 9}
+    ]}
+]})
 # Parse every modified runtime query, even panels not covered by numeric cases.
 for panel in dashboard["panels"]:
     for target in panel.get("targets", []):
-        if "chatchat_runtime_collection" in target.get("expr", ""):
+        if target.get("expr") and ("chatchat_runtime_collection" in target["expr"] or panel["title"] in (
+            "Delivery stage p95", "Delivery stage mean", "Delivery stage outcomes",
+            "TCP disconnect reasons", "TCP Redis latency", "TCP Redis failures", "TCP database timing",
+            "TCP sessions (HAProxy)", "TCP connections per node", "TCP connection rate"
+        )):
+            expression = target["expr"].replace("$__rate_interval", "1m")
             tests.append({"name": "empty " + panel["title"], "promql_expr_test": [
-                {"expr": target["expr"], "eval_time": "20s", "exp_samples": []}
+                {"expr": expression, "eval_time": "20s", "exp_samples": []}
             ]})
 
 command = sys.argv[1:] or ["promtool"]

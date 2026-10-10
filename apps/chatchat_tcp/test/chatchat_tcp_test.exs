@@ -38,20 +38,26 @@ defmodule ChatchatTcpTest do
   end
 
   test "rejects an invalid token and closes the socket" do
+    observe_closures()
     socket = connect()
     :ok = :gen_tcp.send(socket, ~s({"type":"authenticate","token":"invalid"}\n))
 
     assert {:ok, %{"type" => "error", "error" => "unauthorized"}} = recv_json(socket)
     assert {:error, :closed} = :gen_tcp.recv(socket, 0, 1_000)
+    assert_receive {:closed_reason, :authentication_rejection}
+    refute_receive {:closed_reason, _}, 30
   end
 
   test "closes a socket which does not authenticate in time" do
+    observe_closures()
     socket = connect()
 
     assert {:ok, %{"type" => "error", "error" => "authentication_timeout"}} =
              recv_json(socket)
 
     assert {:error, :closed} = :gen_tcp.recv(socket, 0, 1_000)
+    assert_receive {:closed_reason, :authentication_timeout}
+    refute_receive {:closed_reason, _}, 30
   end
 
   test "partial traffic does not reset the authentication deadline" do
@@ -95,6 +101,22 @@ defmodule ChatchatTcpTest do
 
     assert {:ok, %{"is_online" => false}} = recv_json(socket)
     :ok = :gen_tcp.close(socket)
+  end
+
+  def observe_closure(_event, _measurements, %{reason: reason}, owner),
+    do: send(owner, {:closed_reason, reason})
+
+  defp observe_closures do
+    id = make_ref()
+
+    :telemetry.attach(
+      id,
+      [:chatchat, :tcp, :connection, :closed],
+      &__MODULE__.observe_closure/4,
+      self()
+    )
+
+    on_exit(fn -> :telemetry.detach(id) end)
   end
 
   defp connect do

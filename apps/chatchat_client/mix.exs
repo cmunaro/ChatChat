@@ -28,7 +28,8 @@ defmodule ChatchatClient.MixProject do
     [
       {:chatchat_auth, in_umbrella: true},
       {:ecto, "~> 3.14"},
-      {:jason, "~> 1.4"}
+      {:jason, "~> 1.4"},
+      {:telemetry, "~> 1.0"}
     ]
   end
 end

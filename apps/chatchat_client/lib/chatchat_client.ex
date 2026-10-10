@@ -1,7 +1,7 @@
 defmodule ChatchatClient do
   use GenServer
 
-  alias ChatchatClient.{Api, Socket, Store}
+  alias ChatchatClient.{Api, ConnectionDiagnostics, Socket, Store}
 
   @ping_interval 30_000
   @reconnect_interval 1_000
@@ -138,7 +138,7 @@ defmodule ChatchatClient do
         {:reply, {:ok, online}, state}
 
       {:error, reason, state} ->
-        {:reply, {:error, reason}, close_and_reconnect(state)}
+        {:reply, {:error, reason}, close_and_reconnect(state, :request_failure)}
     end
   end
 
@@ -165,7 +165,7 @@ defmodule ChatchatClient do
   @impl true
   def handle_cast(:disconnect, %{socket: nil} = state), do: {:noreply, state}
 
-  def handle_cast(:disconnect, state), do: {:noreply, close_and_reconnect(state)}
+  def handle_cast(:disconnect, state), do: {:noreply, close_and_reconnect(state, :intentional)}
 
   @impl true
   def handle_info(:ping, state) do
@@ -177,7 +177,7 @@ defmodule ChatchatClient do
         {:noreply, schedule_ping(state)}
 
       {:error, _reason, state} ->
-        {:noreply, close_and_reconnect(state)}
+        {:noreply, close_and_reconnect(state, :ping_failure)}
     end
   end
 
@@ -186,17 +186,17 @@ defmodule ChatchatClient do
       {:ok, state} ->
         case Socket.activate(socket) do
           :ok -> {:noreply, state}
-          {:error, _reason} -> {:noreply, close_and_reconnect(state)}
+          {:error, _reason} -> {:noreply, close_and_reconnect(state, :socket_error)}
         end
 
       {:error, {:protocol_suspended, _}, state} ->
-        {:noreply, close_and_reconnect(state)}
+        {:noreply, close_and_reconnect(state, :protocol_suspension)}
 
       {:error, {:receive_storage, _} = reason, state} ->
         {:stop, reason, state}
 
       {:error, _reason, state} ->
-        {:noreply, close_and_reconnect(state)}
+        {:noreply, close_and_reconnect(state, :socket_error)}
     end
   end
 
@@ -223,10 +223,10 @@ defmodule ChatchatClient do
   end
 
   def handle_info({:tcp_closed, socket}, %{socket: socket} = state),
-    do: {:noreply, close_and_reconnect(state)}
+    do: {:noreply, close_and_reconnect(state, :peer_close)}
 
   def handle_info({:tcp_error, socket, _reason}, %{socket: socket} = state),
-    do: {:noreply, close_and_reconnect(state)}
+    do: {:noreply, close_and_reconnect(state, :socket_error)}
 
   def handle_info({:tcp, _stale_socket, _line}, state), do: {:noreply, state}
   def handle_info({:tcp_closed, _stale_socket}, state), do: {:noreply, state}
@@ -235,10 +235,14 @@ defmodule ChatchatClient do
   def handle_info(:reconnect, %{socket: nil} = state) do
     state = %{state | reconnect_timer: nil}
 
-    with {:ok, token} <- reconnect_token(state),
-         {:ok, socket, _user_id} <- Socket.connect(token),
-         :ok <- Socket.activate(socket) do
+    ConnectionDiagnostics.emit(state, :reconnect_attempt)
+
+    with {:ok, token} <- reconnect_step(state, :token, fn -> reconnect_token(state) end),
+         {:ok, socket, _user_id} <-
+           reconnect_step(state, :connect_authenticate, fn -> Socket.connect(token) end),
+         :ok <- reconnect_step(state, :activate, fn -> Socket.activate(socket) end) do
       state = %{state | token: token, socket: socket}
+      ConnectionDiagnostics.emit(state, :reconnect_ok)
       {:noreply, schedule_ping(state)}
     else
       _ ->
@@ -248,6 +252,28 @@ defmodule ChatchatClient do
 
   def handle_info(:reconnect, state), do: {:noreply, %{state | reconnect_timer: nil}}
 
+  defp reconnect_step(state, stage, operation) do
+    try do
+      result = operation.()
+
+      succeeded =
+        case {stage, result} do
+          {:token, {:ok, _}} -> true
+          {:connect_authenticate, {:ok, _, _}} -> true
+          {:activate, :ok} -> true
+          _ -> false
+        end
+
+      unless succeeded, do: ConnectionDiagnostics.emit(state, {:reconnect_failed, stage})
+
+      result
+    catch
+      kind, reason ->
+        ConnectionDiagnostics.emit(state, {:reconnect_failed, stage})
+        :erlang.raise(kind, reason, __STACKTRACE__)
+    end
+  end
+
   defp reconnect_token(%{preprovisioned: true, user_id: user_id}) do
     {:ok, ChatchatAuth.issue(user_id).access_token}
   end
@@ -256,6 +282,7 @@ defmodule ChatchatClient do
 
   @impl true
   def terminate(_reason, %{socket: socket} = state) do
+    if socket, do: ConnectionDiagnostics.emit(state, {:disconnect, :shutdown})
     cancel_timer(state.ping_timer)
     cancel_timer(state.reconnect_timer)
     cancel_timer(state.retry_timer)
@@ -265,7 +292,8 @@ defmodule ChatchatClient do
 
   def terminate(_reason, _state), do: :ok
 
-  defp close_and_reconnect(state) do
+  defp close_and_reconnect(state, reason) do
+    if state.socket, do: ConnectionDiagnostics.emit(state, {:disconnect, reason})
     cancel_timer(state.ping_timer)
     cancel_timer(state.reconnect_timer)
     Socket.close(state.socket)
@@ -399,7 +427,7 @@ defmodule ChatchatClient do
            message: entry.payload
          }) do
       :ok -> state
-      {:error, _reason} -> close_and_reconnect(state)
+      {:error, _reason} -> close_and_reconnect(state, :socket_error)
     end
   end
 
