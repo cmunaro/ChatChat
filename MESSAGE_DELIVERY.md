@@ -1,90 +1,140 @@
 # Message delivery
 
-Delivery is at least once. The identity is `(authenticated sender_id, client message_id)`.
-The mocked sender records its immutable receiver and payload in an in-memory outbox before sending.
-Each transmission uses a fresh request UUID. Until a matching `ok`, that outbox owns recovery.
-`ok` means an authenticated receiver accepted the message in memory or PostgreSQL committed a pending row.
-A failure or missing response can still have delivered a copy; retry preserves the identity.
+**At least once. No strict ordering. One active connection per user.**
 
-See [wire frames and precise limits](MESSAGE_DELIVERY_CONTRACT.md),
-[the architecture goal](MESSAGE_DELIVERY_GOAL.md), and [verification backlog](MESSAGE_DELIVERY_TASKS.md).
-The live protocol reference is `/admin/tcp-protocol`.
+## Flow
 
-## Direct receipt and fallback
+```mermaid
+flowchart TD
+    Send[Client saves to in-memory outbox] --> Route[Resolve receiver through Redis]
+    Route --> Direct[Try direct delivery across BEAM nodes]
+    Direct -->|Receiver saves + ACKs| OK[Sender receives ok]
+    Direct -->|Offline / unavailable / no ACK| Store[Commit pending row to PostgreSQL]
+    Store -->|Committed| OK
+    Store -->|Cannot confirm commit| Failed[Sender receives failed]
+    Store --> Inbox[Wake receiver inbox worker]
+    Inbox --> Receipt[Receiver saves + ACKs]
+    Receipt --> Delete[Delete pending row]
+    Failed --> Retry[Retry same message identity]
+    Retry --> Route
+```
 
-Authenticated TCP handlers validate IDs, types, encoded sizes, and sender identity before
-admitting payload work. Redis supplies only an expiring node/session route. Local Registry
-entries and session-aware atomic Redis operations enforce one active connection per user.
-Only local or connected BEAM nodes can be resolved from route strings.
+| Result | Meaning | Client action |
+| --- | --- | --- |
+| `ok` | Receiver ACK or PostgreSQL commit | Remove outbox entry |
+| `failed` | Capacity/unavailability; delivery may have happened | Retry |
+| No response | Unknown outcome | Retry after timeout |
+| `rejected` | Invalid request/receiver or identity conflict | Retain entry; stop retrying it |
 
-The sender coordinator checks existing PostgreSQL identity/content, then requests a bounded
-receiver permit before forwarding a payload. Local and cross-node deliveries share receipt
-tracking. The direct window is two seconds, with at most two transmissions. An ACK binds the
-authenticated receiver, its session, message identity, receipt UUID, and originating attempt.
-Confirmed direct receipt produces `ok` without a PostgreSQL message write or Redis payload write.
+**`ok` does not mean read, offline delivery completed, or client disk durability.**
+Redis holds routes only. PostgreSQL holds pending messages, not conversation history.
+Undelivered rows do not expire.
 
-Offline, stale, unavailable, or unconfirmed routes fall back to PostgreSQL. Composite identity
-uniqueness serializes concurrent inserts; locked content checks reject conflicting reuse and
-preserve the winning timestamp. Success is reported only after commit. Every confirmed insert
-wakes the receiver's current route. A receipt racing with an insert can leave a pending row;
-normal inbox delivery and receiver deduplication safely handle that extra copy.
+## Sender → receiver
 
-The result deadline is eight seconds including queue time. Routing, insertion, and deletion
-share 32 workers. A running write keeps its reservation even if the sender disconnects or
-receives a failure; confirmed late commits still trigger inbox recovery.
+```mermaid
+sequenceDiagram
+    actor Sender as sender
+    participant TCP as tcp
+    participant Redis as redis
+    participant PG as postgres
+    actor Receiver as receiver
 
-## Stored inbox recovery
+    Note over TCP: Represents sender and receiver TCP nodes
+    Sender->>Sender: Save message in in-memory outbox
+    Sender->>TCP: Send message (stable message_id)
+    TCP->>TCP: Validate and admit bounded work
+    TCP->>Redis: Resolve receiver node and session
+    Redis-->>TCP: Route or unavailable
 
-Presence registration precedes the first inbox wake. The scheduler coalesces hints, starts at
-most 64 workers, and reserves page bytes before querying. Each page contains at most 16 rows;
-composite cursors wrap and revisit unacknowledged rows after ten seconds. Authorized stored
-ACKs delete by receiver and composite identity. Failed/deferred deletion leaves the row recoverable.
+    opt Receiver route available
+        TCP->>Receiver: Deliver message + receipt_id
+        Receiver->>Receiver: Record in memory / deduplicate
+        Receiver-->>TCP: ACK if received (identity + receipt_id)
+    end
 
-A staggered local reconciliation pass visits connected receivers in batches of 128 roughly
-every 30 seconds. Lost hints, commit-before-notification crashes, and worker failures therefore
-leave PostgreSQL ownership intact. No Redis keyspace scan is needed.
+    alt Valid receiver ACK confirmed
+        TCP-->>Sender: ok (no PostgreSQL message write)
+        Sender->>Sender: Remove outbox entry
+    else Offline / unavailable / no ACK before deadline
+        TCP->>PG: Insert pending message idempotently
+        alt Commit confirmed
+            PG-->>TCP: Committed
+            TCP-->>Sender: ok
+            Sender->>Sender: Remove outbox entry
+            TCP->>Redis: Resolve current receiver route
+            Redis-->>TCP: Route or unavailable
+            TCP->>TCP: Wake inbox if routed, reconcile later
+            Note over TCP,Receiver: When receiver is connected
+            TCP->>PG: Read bounded pending inbox page
+            PG-->>TCP: Pending messages
+            TCP->>Receiver: Deliver message + fresh receipt_id
+            Receiver->>Receiver: Record in memory / deduplicate
+            Receiver-->>TCP: Authenticated receipt ACK
+            TCP->>PG: Delete by receiver + message identity
+        else Commit not confirmed and no valid receipt
+            TCP-->>Sender: failed
+            Sender->>Sender: Retry same identity with backoff
+        end
+    end
+```
 
-## Per-client behavior
+## Identity & recovery
 
-Each client owns in-memory outbox, inbox deduplication, and suspension state. `Store` is a
-pure helper, not a GenServer. Outbox insertion precedes network send. Inbox content and
-composite deduplication are recorded before ACK; duplicates ACK again and conflicts never ACK.
-Interleaved messages/results update that same client state during ping and online queries,
-including when the query subsequently fails. No shared store admission or storage retry exists.
+| Rule | Behavior |
+| --- | --- |
+| Message identity | `(authenticated sender_id, client message_id)` |
+| Retry | Same receiver, payload, and message UUID; fresh request UUID |
+| Fallback insert | Same stored content is idempotent; changed content is rejected |
+| Receiver duplicate | Record once, ACK again; changed content never ACKs |
+| ACK authority | Exact identity, receipt, authenticated receiver, and session |
+| Lost inbox wakeup | Reconciliation revisits connected receivers about every 30s |
+| Unacknowledged row | Cursor wraps and retries; stuck rows do not block newer rows |
+| ACK/insert race | A committed extra copy remains eligible for inbox delivery |
+| Timestamp | Backend metadata; fallback retries preserve stored time; direct attempts use fresh time |
 
-Matching `ok` removes an outbox entry. Failure, disconnect, and a ten-second unknown-outcome
-timeout schedule bounded backoff (one to thirty seconds plus jitter). Disconnect/reconnect
-preserves identity; client-process restart clears all state. Mocked receipt has no disk
-durability. Permanent rejections remain available through `ChatchatClient.outbox/1`, while
-uncorrelated protocol errors suspend automatic sends until `ChatchatClient.resume/1`.
-There is no retry cutoff, ordering guarantee, history synchronization, or automatic
-inbox deduplication expiry.
+Direct delivery makes no PostgreSQL message queries. It relies on the sender reusing immutable
+content and receiver deduplication; conflicts with pending rows are checked only on fallback.
 
-## Resource and crash bounds
+## Mock clients
 
-Each node admits at most 409 sender attempts at 20 KiB each and 682 receiver reservations at
-12 KiB each, within separate 8 MiB budgets. Each connection admits at most 16 sender attempts
-and 16 outstanding receiver frames. Queued frames retain permits until consumed/discarded or
-the handler dies, even after receipt expiry. Origin accounting also waits for transport consumption
-or receiver coordinator death. Socket sends time out after one second.
+- Save outbox before send; save inbox/deduplication before ACK.
+- Retry indefinitely with 1–30s backoff plus jitter.
+- Reconnect preserves state; **process stop/crash clears everything**.
+- Inbox/deduplication grows in memory for the client's lifetime.
+- Uncorrelated protocol errors suspend sends until explicit `resume`.
 
-Inbox loaded pages have an 8 MiB aggregate budget. Wake ingress, coalesced pending receivers,
-retry timers, and cursor metadata each cap at 4,096. Full hint queues rely on reconciliation.
-Each client caps its outbox at 128 entries and inflight attempts at 16; full outbox submissions
-return capacity errors. Indexed inbox and outbox pages cap at 128. At most 16 simulations
-run per application. Retained inbox deduplication grows in memory until its client stops.
+| Inspect/control | API |
+| --- | --- |
+| Pending/rejected sends | `ChatchatClient.outbox(client)` |
+| Received messages | `ChatchatClient.inbox(client)` |
+| Resume after fixing protocol error | `ChatchatClient.resume(client)` |
 
-A one-for-all delivery supervision group restarts coordinators, workers, scheduler, and TCP
-connection producers together so old payload producers cannot outlive replacement budgets.
-Redis owns only presence. PostgreSQL owns pending messages until authorized receipt cleanup;
-each client owns sender recovery and receiver deduplication while its process lives.
+## Protocol & limits
 
-## Deployment and monitoring
+Full wire reference: [`/admin/tcp-protocol`](http://localhost:4000/admin/tcp-protocol).
+Frames are newline-delimited UTF-8 JSON; authenticate first. UUIDs are canonical lowercase.
+Frame limits include JSON escaping and envelope fields. Sender identity comes from authentication.
 
-TCP releases use unique container-IP node names, DNSPoll discovery, a shared required cookie,
-and private ports 4369/9100. See [deployment setup](README.md#tcp-load-balancing)
-for trusted-network and distribution TLS requirements. Single-node development needs no discovery.
+| Bound | Value |
+| --- | --- |
+| Encoded frame, excluding newline | 4,096 bytes |
+| Authentication / idle / socket send timeout | 5s / 60s / 1s |
+| Direct window / transmissions | 2s / at most 2 |
+| Server result / client response timeout | 8s / 10s |
+| Database operation timeout | At most 5s |
+| Sender attempts per node / connection | 409 / 16 |
+| Receiver reservations per node / connection | 682 / 16 |
+| Sender / receiver / inbox byte budgets | 8 MiB each per node |
+| Database workers / inbox workers | 32 / 64 |
+| Inbox page | 16 rows |
+| Wake ingress / pending receivers / timers / cursors | 4,096 each |
+| Client outbox / inflight / read page | 128 / 16 / 128 |
+| Concurrent simulations | 16 |
 
-PromEx reports sender results by status/reason, stored inbox receipts, active attempts and workers,
-receiver receipts, waiting work, reserved inbox bytes, and pending PostgreSQL rows. Admin events
-are node-local telemetry forwarded through Phoenix PubSub; Redis has no message Pub/Sub path.
+Admission reserves capacity **before payload enqueue**. Queued frames keep permits until
+consumed/discarded or the handler dies. Running writes keep reservations until exit;
+confirmed late commits still wake inbox recovery. Delivery supervision restarts producers
+and coordinators together to preserve budgets.
+
+Deployment: [TCP load balancing](README.md#tcp-load-balancing).

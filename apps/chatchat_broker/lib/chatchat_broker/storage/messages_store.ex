@@ -7,16 +7,6 @@ defmodule ChatchatBroker.Storage.MessagesStore do
   @max_page 128
   @timeout 5_000
 
-  def check_pending(sender_id, message_id, receiver_id, payload) do
-    case Repo.get_by(Message, [sender_id: sender_id, message_id: message_id], timeout: @timeout) do
-      nil -> {:ok, nil}
-      %{receiver_id: ^receiver_id, payload: ^payload} = stored -> {:ok, stored.inserted_at}
-      _ -> {:error, :identity_conflict}
-    end
-  rescue
-    _error in [Postgrex.Error, DBConnection.ConnectionError] -> {:error, :unavailable}
-  end
-
   @doc "Commits pending ownership, checking immutable content on identical retries."
   def insert_pending(attributes, timeout \\ @timeout)
       when is_integer(timeout) and timeout > 0 and timeout <= @timeout do

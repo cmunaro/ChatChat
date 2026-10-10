@@ -595,16 +595,7 @@ defmodule ChatchatTcp.MessageDelivery do
       Task.Supervisor.async_nolink(ChatchatTcp.Delivery.TaskSupervisor, fn ->
         case phase do
           :routing ->
-            with {:ok, timestamp} <-
-                   MessagesStore.check_pending(
-                     attempt.sender_id,
-                     attempt.id,
-                     attempt.receiver,
-                     attempt.message
-                   ),
-                 {:ok, route} <- Presence.route(attempt.receiver) do
-              {:ok, {route, timestamp || attempt.inserted_at}}
-            end
+            Presence.route(attempt.receiver)
 
           :fallback ->
             result =
@@ -652,11 +643,11 @@ defmodule ChatchatTcp.MessageDelivery do
             maybe_release(state, reference)
 
           phase == :routing and match?({:ok, _}, result) and now() < attempt.direct_deadline ->
-            {:ok, {route, timestamp}} = result
+            {:ok, route} = result
 
             attempt =
               Map.put(
-                %{attempt | phase: :direct, job: nil, inserted_at: timestamp},
+                %{attempt | phase: :direct, job: nil},
                 :route,
                 route
               )

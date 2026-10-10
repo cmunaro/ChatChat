@@ -98,36 +98,6 @@ defmodule ChatchatBroker.Storage.MessagesStoreTest do
     end
   end
 
-  test "routing lookup checks immutable content without writing", %{message: message} do
-    assert {:ok, nil} =
-             MessagesStore.check_pending(
-               message.sender_id,
-               message.message_id,
-               message.receiver_id,
-               message.payload
-             )
-
-    assert {:ok, stored} = MessagesStore.insert_pending(message)
-
-    assert {:ok, timestamp} =
-             MessagesStore.check_pending(
-               message.sender_id,
-               message.message_id,
-               message.receiver_id,
-               message.payload
-             )
-
-    assert timestamp == stored.inserted_at
-
-    assert {:error, :identity_conflict} =
-             MessagesStore.check_pending(
-               message.sender_id,
-               message.message_id,
-               message.receiver_id,
-               "changed"
-             )
-  end
-
   test "independent concurrent transactions confirm one committed row" do
     Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
       sender = Repo.insert!(%User{username: Ecto.UUID.generate(), password_hash: "unused"})

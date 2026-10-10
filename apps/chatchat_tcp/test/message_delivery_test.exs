@@ -29,25 +29,29 @@ defmodule ChatchatTcp.MessageDeliveryTest do
     %{sender: sender, receiver: receiver, other: other}
   end
 
-  test "confirmed local receipt writes neither PostgreSQL nor Redis payload", %{
-    sender: sender,
-    receiver: receiver
-  } do
+  test "confirmed local receipt makes no per-message PostgreSQL queries or Redis payload writes",
+       %{
+         sender: sender,
+         receiver: receiver
+       } do
     from = connect(sender.id)
     to = connect(receiver.id)
     request = request(receiver.id)
     observer = self()
     telemetry_id = make_ref()
+    {:ok, database_id} = Ecto.UUID.dump(request.message_id)
 
     :ok =
       :telemetry.attach(
         telemetry_id,
         [:chatchat_broker, :repo, :query],
-        fn _, _, metadata, observer ->
-          if String.contains?(metadata.query, "INSERT INTO \"messages\""),
-            do: send(observer, :message_write)
+        fn _, _, metadata, {observer, database_id} ->
+          # Independent connection/reconciliation inbox reads are still expected.
+          if String.contains?(metadata.query, "\"messages\"") and
+               database_id in metadata.params,
+             do: send(observer, :message_query)
         end,
-        observer
+        {observer, database_id}
       )
 
     on_exit(fn -> :telemetry.detach(telemetry_id) end)
@@ -59,8 +63,9 @@ defmodule ChatchatTcp.MessageDeliveryTest do
     acknowledge(to, frame)
     assert {:ok, %{"status" => "ok", "request_id" => request_id}} = recv(from)
     assert request_id == request.request_id
+    refute_receive :message_query
+    :telemetry.detach(telemetry_id)
     assert Repo.get_by(Message, sender_id: sender.id, message_id: request.message_id) == nil
-    refute_receive :message_write
 
     assert {:ok, nil} =
              Redix.command(ChatchatTcp.Redis, ["GET", "chatchat:message:#{request.message_id}"])
@@ -127,7 +132,7 @@ defmodule ChatchatTcp.MessageDeliveryTest do
     assert Repo.get_by(Message, sender_id: sender.id, message_id: request.message_id)
   end
 
-  test "conflicting stored identity is rejected even when receiver is online", %{
+  test "fallback rejects conflicting stored identity", %{
     sender: sender,
     receiver: receiver
   } do
@@ -142,7 +147,6 @@ defmodule ChatchatTcp.MessageDeliveryTest do
              })
 
     from = connect(sender.id)
-    _to = connect(receiver.id)
     send_json(from, request)
     assert {:ok, %{"status" => "rejected", "reason" => "identity_conflict"}} = recv(from)
   end
