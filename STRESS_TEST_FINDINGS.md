@@ -251,3 +251,79 @@ software alone cannot fix this application queue.
    Increasing backlog alone buffers work and cannot increase sustainable throughput.
 
 These are proposed changes for a future deployment, not fixes applied to this run.
+
+
+## Task 2 completed: isolated connection-setup failure, 18:26–18:32 UTC
+
+The user authorized a fresh stress test and PostgreSQL cleanup. A separate
+`chatchat-task2` Compose project used new database, Redis, barrier and monitoring
+volumes. Application images were rebuilt from the current checkout; HAProxy was
+retained. No application bottleneck fixes or resource-limit changes were applied.
+Six generators requested 20,000 clients each, send probability 0.01/s,
+disconnect probability 0.001/s, and 300 seconds of activity after the all-ready
+barrier. Effective TCP schedulers were **12 per node**, versus two in the earlier
+run, on the same 12-CPU Docker host. This is attribution evidence, not an equal
+resource baseline or a before/after improvement claim.
+
+Raw evidence: `/tmp/chatchat-task2-full-attribution-20261010/` contains capture
+metadata/image IDs/effective limits, 33 timestamped samples over 330 seconds,
+`summary.md`, `analysis.json`, and a final Redis INFO ALL snapshot. An earlier
+setup capture is in `/tmp/chatchat-task2-attribution-20261010/`. Individual probes
+record start/end times; samples and scrapes are not atomic. The nominal 600-second
+capture was stopped early after sustained setup failure, before cleanup.
+
+The all-ready barrier was never reached. Last successful shard observations
+reported 107,036 ready wrappers combined; every shard remained `connecting` and
+all queued-message counters were explicitly zero. Fresh connection collection
+reported approximately 106,976 authenticated sockets before collapse and 43,779
+at the final sample. Wrapper membership survived disconnects. This run did not
+exercise message throughput, delivery deadlines, or a drain/recovery acceptance test.
+
+| Measured mechanism | Evidence |
+| --- | --- |
+| Shared Redis client/runtime queueing | Repeated Redix snapshots peaked at 50,687 and 51,668 mailbox messages. There were also intervening low/zero readings: recurring pressure, not a permanently full mailbox. Nine/ six runtime probes timed out and cannot be treated as zero. Script round-trip p95 approached the 10-second histogram boundary. |
+| Scheduler pressure | Summed reported run-queue lengths peaked at 10,708 and 7,538. Each TCP node had 12 schedulers, sharing compute with six generators and HAProxy. |
+| Lease failure and reconnect amplification | Combined one-minute presence-unavailable closure rate peaked near 2,259/s. Last successful client samples totaled 105,004 ping failures, 62,467 peer closes, 879,881 reconnect attempts, 714,121 connect/authenticate failures, and 110,453 successful reconnects. Counts are asynchronous observations; in-flight attempts prevent attempted = failed + successful. |
+| Per-listener accept pressure | At the 18:29:19 tick, HAProxy's two TCP 4040 listeners held 4,097 and 4,095 queued connections against configured backlogs of 4,096. The backend listeners and metrics listeners were sampled separately. HAProxy namespace ListenDrops/ListenOverflows increased by 2,982,927; TCP namespace deltas were 360,587 and 279,741. This correlates actual TCP listener saturation with namespace drops; it does not assign every drop to one listener. |
+| Proxy destination/source-port pressure | Untruncated `ss` snapshots showed a maximum 53,510 established source ports toward one backend. The maximum sum of state-specific counts per backend destination was 53,511, below the 64,512-port configured range (1024–65535). During collapse, one snapshot showed 17,249 SYN-SENT sockets toward a backend. Source-port exhaustion was not observed; brief unsampled pressure or allocation failures remain possible. |
+| Descriptor limits | Sampled maxima: TCP about 53.5k and HAProxy about 214k FDs versus 1,048,576; a generator about 18k versus 100k. These samples do not support FD exhaustion. |
+| Redis server latency | Final lifetime EVALSHA execution averaged 6.87 microseconds and GET 0.53 microseconds; no rejected connections or evictions. INFO ALL also recorded a maximum slow EVALSHA execution of 77.52 ms. Server stalls exist, but observed server execution does not account for multi-second client round trips by itself. These are lifetime summaries, not interval p95s. |
+| PostgreSQL latency | TCP Ecto queue p95 reached about 1.44 s and execution p95 1.93 s during connection collapse. The final activity snapshot had 30 idle client sessions and only the diagnostic query active. These are background/authentication/collector queries in a run with zero submitted messages, not measured delivery transactions. CPU or pool contention can affect them; PostgreSQL alone is not established as the cause. |
+
+The earlier **message-producing** run attributes dominant delivery delay to the
+bounded worker queue: 409 active attempts, 377 waiting and 32 workers/node, with
+queue p95 initially 4.25–4.97 seconds versus roughly 4 ms scheduling delay. Re-reading
+its final raw sample also found queue p95 around 9.5–10 seconds, route p95
+1.55–3.06 seconds, Redis script round-trip p95 9.30–9.58 seconds, and persistence
+p95 94–121 ms. Values at the highest finite histogram boundary are approximate;
+the tail above that boundary is unresolved. Percentiles overlap and cannot be added.
+
+Together, the runs measure a capacity-consuming mechanism: shared presence/client
+queues and scheduling pressure lead to lease-related closure and ping failures;
+reconnect activity and failed backend handshakes consume accept capacity. The fresh
+run reproduced this loop **before message traffic**, so delivery writes are not a
+necessary trigger. The earlier run separately shows bounded delivery worker waiting
+as the dominant measured message-stage delay. Redis execution averages, FD counts,
+and sampled source-port headroom weaken competing exclusive explanations without
+proving they can never contribute. Shared CPU causation still requires task 3's
+controlled compute baseline; connection splitting/backoff require tasks 8 and 6.
+
+All native socket snapshots completed without row/destination truncation. Slow
+`/proc` scans were explicitly unavailable and replaced with a separate local
+iproute2 helper sharing only the target network namespace. Missing TCP event series
+are **absent observations**, not proven zero. In contrast, initialized client
+counters explicitly reported zero intentional disconnects, socket errors, token
+failures and activation failures. At most 16 client retry states/shard were sampled
+with bounded timeouts; they are convenience samples, not population estimates or
+proof of retry spacing for every client. Fixed one-second reconnect ownership was
+also verified in the existing client and wrapper code; no retry policy was changed.
+
+The workload was stopped after sustained setup collapse. With writers stopped,
+`messages`, `users`, and `admin_users` were truncated with identity reset in the
+isolated PostgreSQL database; all three counts were verified zero. Migration history
+was retained until the temporary project and its volumes were removed. Existing
+project data was untouched. Capture regression tests passed (13 tests), including
+late listeners, source-port deduplication, truncation, repeated runtime polling,
+missing diagnostics, and failed socket queries versus valid zero observations.
+Only Python capture support, its optional probe image and documentation changed;
+Mix checks were not rerun for this completion.

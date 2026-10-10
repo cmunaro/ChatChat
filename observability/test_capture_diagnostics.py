@@ -4,6 +4,9 @@ import argparse
 from io import BytesIO
 import json
 import subprocess
+import os
+from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -61,6 +64,74 @@ class CaptureTests(unittest.TestCase):
         self.assertIn("100% CPU", report)
         self.assertIn("not proof of causation", report)
         self.assertEqual(capture.finite_samples(metric({}, "NaN")), [])
+
+    def test_socket_scan_finds_listener_after_old_limit_and_counts_unique_ports(self):
+        program = capture.SOCKET_PROBE.split("if command -v awk", 1)[1].split("awk '", 1)[1].split("' \"$file\"", 1)[0]
+        rows = ["header"] + ["0: 0100007F:1234 0200007F:0FC8 01 00000000:00000000"] * 5000
+        rows += ["0: 00000000:0FC8 00000000:0000 0A 00000000:00000008"]
+        result = subprocess.run(["awk", program], input="\n".join(rows), text=True, capture_output=True, check=True)
+        observation = capture.socket_observation(result.stdout)
+        self.assertEqual(observation["listeners"][0]["address_hex"], "00000000:0FC8")
+        self.assertEqual(observation["destinations"][0]["count"], 5000)
+        self.assertEqual(observation["destinations"][0]["unique_source_ports"], 1)
+        self.assertIn("TRUNCATED 0", observation["scan_bounds"][0])
+
+    def test_socket_destination_limit_reports_omissions_without_losing_listeners(self):
+        program = capture.SOCKET_PROBE.split("if command -v awk", 1)[1].split("awk '", 1)[1].split("' \"$file\"", 1)[0]
+        rows = ["header"] + [f"0: {index:08X}:1234 0200007F:0FC8 01 00000000:00000000" for index in range(300)]
+        rows += ["0: 00000000:0FC8 00000000:0000 0A 00000000:00000001"]
+        result = subprocess.run(["awk", program], input="\n".join(rows), text=True, capture_output=True, check=True)
+        observation = capture.socket_observation(result.stdout)
+        self.assertEqual(len(observation["destinations"]), 256)
+        self.assertEqual(len(observation["listeners"]), 1)
+        self.assertIn("OMITTED_DESTINATION_ROWS 44", observation["scan_bounds"][0])
+
+    def test_socket_row_limit_marks_incomplete_scan(self):
+        program = capture.SOCKET_PROBE.split("if command -v awk", 1)[1].split("awk '", 1)[1].split("' \"$file\"", 1)[0]
+        row = "0: 0100007F:1234 0200007F:0FC8 01 00000000:00000000\n"
+        result = subprocess.run(["awk", program], input="header\n" + row * 262145,
+                                text=True, capture_output=True, check=True)
+        self.assertIn("SOCKET_ROWS 262144 TRUNCATED 1", result.stdout)
+
+    def test_kernel_deltas_are_namespace_scoped_and_reset_is_unavailable(self):
+        def sample(value):
+            return {"timestamp": "now", "probes": {"proc:proxy": {"status": "ok", "data":
+                "TcpExt: ListenDrops ListenOverflows\nTcpExt: %s %s" % (value, value)}}}
+        report = capture.summary([sample(10), sample(15), sample(1)])
+        self.assertIn("'ListenDrops': 5", report)
+        self.assertEqual(report.count("unavailable (first sample/reset)"), 2)
+
+    def test_repeated_runtime_probe_is_not_gated_by_slow_resource_interval(self):
+        args = argparse.Namespace(prometheus="http://localhost", tcp_container=["tcp"], haproxy_container=[], loadgen_container=[], resource_container=[])
+        with patch.object(capture, "prometheus_probe", return_value={"status": "no_data"}), patch.object(capture, "json_command_probe", return_value={"status": "ok", "data": {"redis": []}}), patch.object(capture, "command_probe", return_value={"status": "ok", "data": ""}):
+            probes = capture.capture_sample(args, include_resources=False)["probes"]
+        self.assertIn("runtime:tcp", probes)
+        self.assertNotIn("proc:tcp", probes)
+        self.assertIn("no_data", capture.summary([{"timestamp": "now", "probes": probes}]))
+
+    def test_failed_ss_query_cannot_be_reported_as_zero_sockets(self):
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / "ss"
+            executable.write_text("#!/bin/sh\nexit 1\n")
+            executable.chmod(0o755)
+            result = subprocess.run(["sh", "-c", capture.SOCKET_PROBE],
+                env={**os.environ, "PATH": directory + ":" + os.environ["PATH"]},
+                text=True, capture_output=True, check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("SOCKET_ROWS 0", result.stdout)
+
+    def test_native_listener_backlog_and_source_port_counts(self):
+        observation = capture.socket_observation(
+            "LISTENER_NATIVE 0.0.0.0:4040 12 4096\n"
+            "DESTINATION_NATIVE 172.31.0.10 172.31.0.6:4040 ESTAB 49417 49417\n"
+            "SOCKET_ROWS 49417 TRUNCATED 0 OMITTED_DESTINATION_ROWS 0")
+        self.assertEqual(observation["listeners"][0]["queued"], 12)
+        self.assertEqual(observation["listeners"][0]["backlog"], 4096)
+        self.assertEqual(observation["destinations"][0]["unique_source_ports"], 49417)
+        for value in ("--privileged", "image;env", "a\nsecret"):
+            with self.assertRaises(argparse.ArgumentTypeError):
+                capture.probe_image(value)
+        self.assertEqual(capture.probe_image("local/probe:v1"), "local/probe:v1")
 
     def test_container_targets_cannot_be_options_or_shell_text(self):
         for name in ("--privileged", "a;env", "a\nsecret"):

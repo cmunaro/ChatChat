@@ -127,21 +127,44 @@ python3 observability/capture_diagnostics.py \
   --tcp-container chatchat-tcp-1 --tcp-container chatchat-tcp-2 \
   --haproxy-container chatchat-haproxy-1 \
   --loadgen-container chatchat-loadgen-1 \
-  --resource-container chatchat-postgres-1 --resource-container chatchat-redis-1 \
+  --postgres-container chatchat-postgres-1 --redis-container chatchat-redis-1 \
   --output tmp/diagnostics-run-1
 ```
+
+For large socket populations, build the optional local `ss` probe image:
+
+```sh
+docker build -t chatchat-socket-probe -f observability/socket-probe.Dockerfile .
+# Add --socket-probe-image chatchat-socket-probe to the capture command.
+```
+
+The helper runs without capabilities, shares only the target network namespace,
+and does not modify application containers. It uses kernel socket diagnostics to
+sample LISTEN occupancy/configured backlog and outgoing source-port counts.
+Without it, installed `ss` is preferred, then bounded `/proc` scans; slow scans
+are explicitly unavailable. Each probe records its own start/end timestamps.
 
 Repeat `--loadgen-container` for each shard. The output directory must be new.
 Defaults: Prometheus `http://localhost:9090`, five-second interval, 300-second
 duration; optional `--interval`, `--duration`, and `--prometheus` override them.
-Sampling uses four concurrent probes, three-second command/request timeouts,
+Sampling uses four concurrent probes, three-second command/request timeouts (eight seconds for separate socket scans),
 bounded response sizes, and at most 32 explicit container targets. Kernel/FD
-probes run at most every 30 seconds; listen-queue sampling examines at most 4,096
-socket rows and explicitly marks truncation. Slow samples skip missed ticks.
+probes run at most every 30 seconds; socket sampling examines at most 262,144
+rows (per address family for `/proc`, total for `ss`) and explicitly marks row and destination truncation.
+It records listeners separately from outgoing destination/state counts and unique
+source ports for TCP 4040, PostgreSQL 5432, and Redis 6379 (hexadecimal addresses).
+Destination tables retain at most 256 groups per scan; omitted rows make counts
+lower bounds. LISTEN rx queues are current occupancy, not configured backlog size.
+TCP RPC samples Redis-role mailboxes and scheduler queues every tick. Client RPC
+samples at most 16 retry states with 25-ms per-process timeouts, without identities
+or message contents; these are convenience samples, not population estimates.
+Redis INFO and PostgreSQL grouped wait/activity snapshots are opt-in probes. Slow samples skip missed ticks.
 Outputs are `capture.json`, timestamped `samples.jsonl`, and `summary.md`.
 The summary aligns stage means, connection/health rates, queue pressure and CPU;
 raw samples include per-node p95s, client counters, socket/TIME_WAIT totals,
-port ranges, descriptor limits/usage, and listen-overflow counters.
+port ranges, descriptor limits/usage, and listen-overflow counters. The summary
+correlates listener samples with namespace counter deltas; neither cumulative
+drops nor a queue snapshot attributes every dropped connection to a listener.
 Missing probes are explicit. Kernel/socket totals alone cannot prove
 per-destination port exhaustion; compare counter deltas and metric freshness.
 No workload or missing new diagnostics leaves attribution pending. The capture
