@@ -42,8 +42,58 @@ defmodule ChatchatClient.SocketTest do
     assert Store.outbox(state.store) == []
     assert state.inflight == %{}
     assert_receive {:delivery_result, :ok}
+    assert_receive {:delivery_confirmed, latency}
+    assert latency >= 0
+    refute_received {:delivery_confirmed, _}
     refute_received {:delivery_result, _}
     Task.await(task)
+  end
+
+  test "confirmation latency includes failed attempts and ignores stale results" do
+    {:ok, id, store} = Store.put_outbox(Store.new(2), 1, "retry")
+    {:value, entry} = :gb_trees.lookup(id, store.outbox)
+
+    store = %{
+      store
+      | outbox: :gb_trees.update(id, %{entry | queued_at: entry.queued_at - 1_000}, store.outbox)
+    }
+
+    first = Ecto.UUID.generate()
+    {:ok, store} = Store.begin_attempt(store, id, first)
+    timer = Process.send_after(self(), :unused_timeout, 10_000)
+    state = %{state() | store: store, inflight: %{id => {first, timer}}}
+
+    failed = %{
+      "type" => "message_result",
+      "message_id" => id,
+      "request_id" => first,
+      "status" => "failed",
+      "reason" => "unavailable"
+    }
+
+    assert {:ok, state} = ChatchatClient.handle_response(nil, failed, state)
+    assert_receive {:delivery_result, :failed}
+    refute_received {:delivery_confirmed, _}
+
+    second = Ecto.UUID.generate()
+    {:ok, store} = Store.begin_attempt(state.store, id, second)
+    timer = Process.send_after(self(), :unused_timeout, 10_000)
+    state = %{state | store: store, inflight: %{id => {second, timer}}}
+    ok = Map.put(failed, "status", "ok")
+    assert {:ok, ^state} = ChatchatClient.handle_response(nil, ok, state)
+    refute_received {:delivery_confirmed, _}
+
+    assert {:ok, state} =
+             ChatchatClient.handle_response(nil, Map.put(ok, "request_id", second), state)
+
+    assert_receive {:delivery_confirmed, latency}
+    assert latency >= 1_000
+    assert Store.outbox(state.store) == []
+
+    assert {:ok, ^state} =
+             ChatchatClient.handle_response(nil, Map.put(ok, "request_id", second), state)
+
+    refute_received {:delivery_confirmed, _}
   end
 
   for ending <- [:pong, :closed, :invalid] do

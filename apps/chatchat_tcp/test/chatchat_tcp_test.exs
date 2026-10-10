@@ -44,8 +44,8 @@ defmodule ChatchatTcpTest do
 
     assert {:ok, %{"type" => "error", "error" => "unauthorized"}} = recv_json(socket)
     assert {:error, :closed} = :gen_tcp.recv(socket, 0, 1_000)
-    assert_receive {:closed_reason, :authentication_rejection}
-    refute_receive {:closed_reason, _}, 30
+    assert_receive {:closed_reason, connection, :authentication_rejection}
+    refute_receive {:closed_reason, ^connection, _}, 30
   end
 
   test "closes a socket which does not authenticate in time" do
@@ -56,8 +56,8 @@ defmodule ChatchatTcpTest do
              recv_json(socket)
 
     assert {:error, :closed} = :gen_tcp.recv(socket, 0, 1_000)
-    assert_receive {:closed_reason, :authentication_timeout}
-    refute_receive {:closed_reason, _}, 30
+    assert_receive {:closed_reason, connection, :authentication_timeout}
+    refute_receive {:closed_reason, ^connection, _}, 30
   end
 
   test "partial traffic does not reset the authentication deadline" do
@@ -104,7 +104,7 @@ defmodule ChatchatTcpTest do
   end
 
   def observe_closure(_event, _measurements, %{reason: reason}, owner),
-    do: send(owner, {:closed_reason, reason})
+    do: send(owner, {:closed_reason, self(), reason})
 
   defp observe_closures do
     id = make_ref()

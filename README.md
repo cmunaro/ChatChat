@@ -207,6 +207,12 @@ Restarting all generators requires a fresh provisioned run.
 
 </details>
 
+For the authorized, isolated task 3 baseline, see
+[controlled connection and traffic runs](observability/BASELINE.md). The runner
+reserves separate Docker CPU sets for backend, generator and proxy work, bounds
+setup, verifies fresh authenticated sockets before traffic, and saves unique
+confirmation latency, retry, outbox and drain observations.
+
 ## Tests
 
 Use dedicated test services; never production/shared data.

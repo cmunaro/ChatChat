@@ -327,3 +327,131 @@ late listeners, source-port deduplication, truncation, repeated runtime polling,
 missing diagnostics, and failed socket queries versus valid zero observations.
 Only Python capture support, its optional probe image and documentation changed;
 Mix checks were not rerun for this completion.
+
+
+## Task 3: controlled compute baseline (2026-10-10 UTC)
+
+The largest **tested** stable connection-only population is **80,000 authenticated
+sockets**. At that density, approximately **794 unique sender confirmations/s**
+stayed bounded, while nominal 4,000 messages/s was unsustainable under the fixed
+allocation. The 800–4,000 offered-rate interval is untested. These bounded holds do
+not establish an exact maximum or unlimited soak capacity. Admission was unchanged.
+
+Primary raw evidence is `/tmp/chatchat-task3-final-20261010/`: `results.json`,
+`versions.json`, `effective-shards.json`, per-step `metadata.json`, timestamped
+`samples.jsonl`/summaries, final population scans, `analysis.json`, and `cleanup.txt`.
+The repeatable runner and resource allocation are documented in
+[observability/BASELINE.md](observability/BASELINE.md). The final invocation used
+`--steps 60000 80000 --traffic 0.01 0.05 0.1`; the 0.1 step was not executed after
+the 0.05 safety stop. macOS idle sleep was prevented with `caffeinate -i`.
+
+### Effective deployment and connection holds
+
+A fresh dedicated PostgreSQL database, Redis and volumes isolated application data.
+The 12-CPU Docker guest reserved CPUs 0–3 for two TCP replicas (quota two CPUs and
+8 GiB each), 4–6 for two generators (quota 1.5 CPUs and 4 GiB each), CPU 7 for
+HAProxy (one CPU, 2 GiB, two threads), 8 for PostgreSQL, 9 for Redis, 10 for web/
+provision and 11 for Prometheus. CPU sets isolate roles within the guest, not from
+physical-host/hypervisor contention. TCP and generators each reported two normal,
+one dirty CPU and one dirty I/O scheduler; web/provision used one normal scheduler.
+Both TCP replicas reported one cluster peer. Versions were Docker 29.6.2,
+Elixir 1.20.4, OTP 29, PostgreSQL 18.6, Redis 8.10.1, HAProxy 3.3.15 and
+Prometheus 3.13.3; selected image tags/IDs and effective limits are in raw metadata.
+
+Two actual generator shards held a three-participant barrier, preventing automatic
+traffic. The runner activated them only after both were ready and fresh authenticated
+TCP counts matched the request. Intentional disconnect probability was zero;
+payloads were 128 bytes and receivers were selected uniformly within each shard.
+HAProxy distributed connections across both TCP nodes. Creation concurrency was
+20/shard with a 5-ms ramp interval, and setup had a 240-second wall-clock deadline.
+A sampled 90-second cooldown cleared old connections between population steps.
+
+| Requested sockets | Connection-only hold | Result |
+| ---: | --- | --- |
+| 60,000 | 120 seconds; samples 21:54:35–21:56:25 UTC | All authenticated; population scan covered all 60k with empty inbox/outbox. |
+| 80,000 | 120 seconds; samples 22:02:08–22:03:58 UTC | All authenticated in every fresh sample; zero client disconnects/reconnects; no messages. Setup took 230.07 seconds. |
+
+These holds covered repeated 10-second renewals, 30-second leases and 30-second
+pings. Sample gaps stayed approximately 10 seconds. At 80k without traffic, TCP
+normal run queues peaked at 14 and shared Redix mailboxes at four.
+
+### Traffic, latency and saturation
+
+Rates below are differences between first/last valid two-generator samples, not
+nominal probabilities or attempt counts. Samples/probes are asynchronous. Latency
+starts at first outbox admission and includes retries; only matching successful
+results count once. Sender confirmation means receiver ACK **or PostgreSQL commit**,
+not necessarily completed receiver delivery. Bucket p95s are upper bounds, and
+unconfirmed work is excluded from latency statistics.
+
+| Offered rate at 80k | Sample window | Unique queued/s | Unique confirmed/s | Confirmation latency | Outstanding / slope |
+| ---: | --- | ---: | ---: | --- | --- |
+| 800/s (p=0.01) | 110 seconds within a 120-second hold | 792.6 | 793.9 | Mean 5.28 ms; p95 ≤50 ms | 31 final; −1.25/s; zero retries |
+| 4,000/s (p=0.05) | 30.01 seconds; safety stop at about 34 seconds | 4,014.4 | 2,923.6 | Mean 1,144.67 ms; p95 ≤10,000 ms | 33,168 final; +1,090.76/s |
+
+All 80k authenticated sockets remained present with zero disconnects/reconnects
+through both steps and drain. At the unsafe step, retry attempts reached 83,181
+and matched failed responses 104,137; rejections/submission failures remained zero.
+Stable sockets alone therefore do not demonstrate sustainable delivery throughput.
+
+At the safe step, median CPU use was 74.25%/71.73% on TCP (200% quota each),
+48.96%/47.19% on generators (150% each), 21.4% on HAProxy and 14.2% on Redis.
+At the unsafe step, TCP medians rose to 164.44%/156.13% (peaks 176.18%/189.07%),
+generators to 107.41%/110.35% (peaks 123.36%/132.56%), HAProxy to 100.3% against
+its 100% quota, Redis to 23.5% and PostgreSQL to 20.8%. TCP normal queues peaked
+at 460, generator queues at 999 and shared Redix mailboxes at 2,455.
+
+This separates measured generator CPU headroom from proxy quota saturation and
+backend runtime/Redis-client queue growth. It does not assign exclusive causation
+to HAProxy, Redis or schedulers, nor prove a specific remediation. Tasks 8 and 6
+remain the next planned work; this task implements neither.
+
+### Drain, receiver coverage and cleanup
+
+Shared simulator probability was set to zero while clients and stores remained
+alive. During the 120-second drain, **233,719 queued identities matched 233,719
+unique sender confirmations** by about 62 seconds. Final counters were 444,571
+send attempts, including 210,852 retries, and 210,848 matched failed responses.
+The retry-tail mean confirmation latency was 25,018.9 ms and p95 exceeded the
+10,000-ms finite histogram boundary; its finite upper bound is unknown. Redix
+mailboxes peaked at 3,840 during drain. PostgreSQL pending rows were zero.
+
+The final population scan observed **79,999 of 80,000 clients**: one client-state
+request timed out, with zero unscanned clients. Observed outboxes/inflight attempts
+were zero and receiver inbox identities totaled **233,718**. Sender acceptance
+fully reconciled, but this incomplete, non-atomic receiver snapshot does **not**
+prove complete receiver delivery or no loss. Full reconciliation and outage/recovery
+validation remain task 7. No failure injection was performed.
+
+Writers were stopped, isolated `messages`, `users` and `admin_users` were truncated,
+and all three counts verified zero (`cleanup.txt`: `0|0|0`). The temporary project
+containers and volumes were removed; existing project data was untouched.
+
+### Preliminary evidence and exclusions
+
+`/tmp/chatchat-task3-controlled-v2-20261010/` separately held 20k/40k sockets and,
+at 40k, measured about 3,992 queued/s and 3,992 confirmed/s with p95 ≤50 ms and
+50 final outstanding identities. Nominal 8k/s collapsed to 18,874 authenticated
+sockets and accumulated 536,263 outstanding identities. Its old per-wrapper
+probability update timed out, so no drain proof is claimed. The final runner uses
+one shared ETS probability setting per simulator and bounded population scans.
+This different density/control run is not an equal-resource before/after improvement.
+
+That preliminary run's 80k setup had a 333.1-second observation gap, invalidating
+capacity attribution; it is excluded as an 80k failure point. An earlier deployment
+used a 512-MiB proxy limit, then was stopped before higher populations; the final
+fresh allocation used 2 GiB to avoid that memory confound. All preliminary isolated
+data was cleaned up. The old approximately 107k setup collapse remains historical
+evidence, not a demonstrated sustainable capacity or an exclusively proven shared
+CPU explanation.
+
+### Verification
+
+The full umbrella suite passed 124 tests. Focused client/TCP tests, formatting,
+high-priority Credo and test compilation with warnings as errors passed. Capture
+regressions passed 13 tests and baseline gate regressions passed four. Coverage
+includes exactly-once matched confirmations, latency across retries, shared
+pause/resume with busy/dead clients, invalid probability rejection, freshness,
+observation gaps and unsafe/missing-data traffic stops. A TCP test observer was
+scoped to the emitting connection to avoid unrelated late closure events; production
+closure behavior was unchanged.

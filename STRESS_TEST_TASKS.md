@@ -91,35 +91,41 @@ Capture regression coverage passed (13 tests); no application behavior changed.
 
 Depends on tasks 1–2. Owns test deployment and load-generator setup.
 
-Latest evidence: the isolated run collapsed during connection setup at about
-107k authenticated sockets, before the traffic barrier; this is a failure point,
-not sustainable capacity. Twelve TCP schedulers/node did not prevent collapse on
-the shared 12-CPU host. A baseline must first demonstrate stable leases and sockets
-without message traffic, then measure delivery under the same resource allocation.
+Completed controlled baseline (2026-10-10 UTC): **80,000 authenticated sockets**
+held for 120 seconds with zero observed disconnects/reconnects. At that population,
+about **794 unique sender confirmations/s** stayed bounded; nominal 4,000/s built
+backlog and was stopped early. The interval between these traffic steps is untested;
+80k is the largest tested stable connection step, not an exact capacity ceiling.
+See [task 3 findings](STRESS_TEST_FINDINGS.md#task-3-controlled-compute-baseline-2026-10-10-utc)
+and [repeatable baseline procedure](observability/BASELINE.md).
 
-- [ ] Document a repeatable run using separate generator compute, or measured CPU
+- [x] Document a repeatable run using separate generator compute, or measured CPU
   allocations with backend headroom. Capture effective options, not just Compose
   defaults, plus versions, replica counts, and resource limits.
-- [ ] Record effective BEAM schedulers, normal run queues, CPU allocations, and
+- [x] Record effective BEAM schedulers, normal run queues, CPU allocations, and
   HAProxy threads. Compare measured TCP scheduler settings with CPU available after
   reserving generator/proxy capacity; do not increase every service's CPU demand.
-- [ ] Ramp requested connection counts in bounded steps below the observed failure
+- [x] Ramp requested connection counts in bounded steps below the observed failure
   point; hold each step long enough to observe repeated lease renewals, pings,
   reconnects and backlog slope. Record a bounded wall-clock setup deadline so an
   unmet all-ready barrier cannot leave the test running indefinitely.
-- [ ] After a connection step stabilizes, establish the all-ready barrier and ramp
+- [x] After a connection step stabilizes, establish the all-ready barrier and ramp
   message traffic using the existing simulator. Keep receiver selection and
   cross-node traffic comparable; zero queued messages during setup is not a
   delivery-throughput result.
-- [ ] Record actual authenticated sockets separately from ready wrappers; measure
+- [x] Record actual authenticated sockets separately from ready wrappers; measure
   unique messages queued/confirmed, confirmation latency, outstanding outbox work,
   and retries. Do not interpret attempt counters as unique-message success rates.
-- [ ] Establish the largest sustainable load before raising admission limits.
+- [x] Establish the largest sustainable load before raising admission limits.
 
-Done when the baseline separates generator saturation from backend saturation and
-reports stable connection-only capacity, then throughput, latency and backlog
-slope per traffic step. Record effective scheduler settings for every BEAM service.
-More TCP replicas on an already saturated host do not count as added capacity.
+
+Fixed Docker CPU sets separate generator, TCP, proxy and storage capacity. Effective
+schedulers, quotas, runtime queues and actual sockets were captured. At the unsafe
+traffic step HAProxy reached its CPU quota while generators retained CPU headroom;
+backend runtime/client queues also grew. Admission limits remain unchanged.
+All 233,719 sender submissions confirmed during drain. Receiver scans covered
+79,999/80,000 clients (one timed out), so full receiver/no-loss reconciliation is
+unproven; task 7 retains that scope and outage/recovery testing.
 
 ## 4. Correct delivery deadline handling — priority P1
 

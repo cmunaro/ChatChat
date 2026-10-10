@@ -27,6 +27,7 @@ QUERIES = {
     "connections": "chatchat_tcp_connected_clients{job=\"chatchat_tcp\"}",
     "collection_health": "chatchat_runtime_collection_success{job=\"chatchat_tcp\"}",
     "collection_last_success": "chatchat_runtime_collection_last_success_timestamp_seconds{job=\"chatchat_tcp\"}",
+    "postgres_pending": "chatchat_postgres_undelivered_messages{job=\"chatchat_tcp\"}",
     "capacity": "{__name__=~\"chatchat_delivery_attempts|chatchat_delivery_waiting|chatchat_delivery_fallback_workers\",job=\"chatchat_tcp\"}",
     "scheduler_queue": "chatchat_tcp_prom_ex_beam_stats_run_queue_count{job=\"chatchat_tcp\"}",
     "sender_results": "sum by (instance, status, reason) (rate(chatchat_messages_results_total{job=\"chatchat_tcp\"}[1m]))",
@@ -39,7 +40,7 @@ QUERIES = {
 
 # Fixed commands only: never inspect environment, read logs, or scan Redis keys.
 PROC_PROBE = r"""
-for file in /proc/net/sockstat /proc/net/sockstat6 /proc/net/netstat /proc/net/snmp /proc/sys/net/ipv4/ip_local_port_range /proc/sys/net/core/somaxconn /proc/sys/net/ipv4/tcp_max_syn_backlog; do
+for file in /proc/net/sockstat /proc/net/sockstat6 /proc/net/netstat /proc/net/snmp /proc/sys/net/ipv4/ip_local_port_range /proc/sys/net/core/somaxconn /proc/sys/net/ipv4/tcp_max_syn_backlog /sys/fs/cgroup/cpu.stat /sys/fs/cgroup/memory.current /sys/fs/cgroup/memory.events; do
   if [ -r "$file" ]; then printf '\nFILE %s\n' "$file"; cat "$file"; fi
 done
 
@@ -51,6 +52,7 @@ for file in /proc/[0-9]*/comm; do
     directory=${file%/comm}
     printf '\nPROCESS %s %s\n' "$directory" "$comm"
     if [ -r "$directory/limits" ]; then cat "$directory/limits"; fi
+    if [ -r "$directory/status" ]; then awk '/^Threads:|^Cpus_allowed_list:/ {print}' "$directory/status"; fi
     if [ -r "$directory/fd" ]; then
       printf 'OPEN_FDS '; ls "$directory/fd" 2>/dev/null | wc -l
     else
@@ -128,6 +130,8 @@ case Process.whereis(ChatchatClient.LoadGenerator) do
       [:number_of_clients, :creation_concurrency, :ramp_interval_ms, :duration_seconds,
        :send_message_probability_per_second, :disconnection_probability_per_second,
        :message_payload_size]))
+    status = Map.put(status, :runtime, %{schedulers: :erlang.system_info(:schedulers_online),
+      run_queues: :erlang.statistics(:run_queue_lengths)})
     retry_sample = :ets.select(simulation_state.clients, [{{:"$1", :"$2", :"$3"}, [], [:"$2"]}], 16)
     {clients, truncated} = case retry_sample do
       :"$end_of_table" -> {[], false}
@@ -145,8 +149,9 @@ case Process.whereis(ChatchatClient.LoadGenerator) do
     end)
     status = Map.put(status, :retry_sample, %{limit: 16, truncated: truncated, observations: observations})
     IO.puts(Jason.encode!(Map.take(status, [:phase, :ready_clients, :running_wrappers,
-      :queued_messages, :confirmed_attempts, :failed_attempts, :submission_failures,
-      :connection_diagnostics, :retry_sample, :effective_options, :requested_clients, :startup_failures])))
+      :queued_messages, :confirmed_attempts, :message_attempts, :retry_attempts, :unique_confirmed_messages, :confirmation_latency_ms,
+      :failed_attempts, :rejected_messages, :submission_failures,
+      :connection_diagnostics, :runtime, :retry_sample, :effective_options, :requested_clients, :startup_failures])))
 end
 """
 

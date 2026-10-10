@@ -20,6 +20,7 @@ defmodule ChatchatClient.Store do
         :none ->
           entry = %{
             message_id: id,
+            queued_at: System.monotonic_time(:millisecond),
             receiver_id: receiver,
             payload: payload,
             request_id: nil,

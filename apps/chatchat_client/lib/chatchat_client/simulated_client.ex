@@ -42,7 +42,7 @@ defmodule ChatchatClient.SimulatedClient do
   def handle_info(:start_activity, state), do: {:noreply, state}
 
   def handle_info(:tick, %{client: client} = state) when is_pid(client) do
-    if selected?(state.send_probability), do: send_message(state)
+    if selected?(send_probability(state)), do: send_message(state)
     if selected?(state.disconnection_probability), do: ChatchatClient.disconnect(client)
 
     schedule_tick()
@@ -56,6 +56,25 @@ defmodule ChatchatClient.SimulatedClient do
 
   def handle_info({:connection_diagnostic, event}, state) do
     ChatchatClient.ConnectionDiagnostics.record(state.connection_counts, event)
+    {:noreply, state}
+  end
+
+  def handle_info({:delivery_attempt, retry?}, state) when is_boolean(retry?) do
+    :atomics.add(state.result_counts, 14, 1)
+    if retry?, do: :atomics.add(state.result_counts, 15, 1)
+    {:noreply, state}
+  end
+
+  def handle_info({:delivery_confirmed, latency}, state)
+      when is_integer(latency) and latency >= 0 do
+    :atomics.add(state.result_counts, 6, 1)
+    :atomics.add(state.result_counts, 7, latency)
+
+    Enum.with_index([10, 50, 100, 500, 1_000, 10_000], 8)
+    |> Enum.each(fn {bound, index} ->
+      if latency <= bound, do: :atomics.add(state.result_counts, index, 1)
+    end)
+
     {:noreply, state}
   end
 
@@ -154,6 +173,11 @@ defmodule ChatchatClient.SimulatedClient do
       _ -> random_recipient(state, attempts - 1)
     end
   end
+
+  defp send_probability(%{activity_options: table}),
+    do: :ets.lookup_element(table, :send_probability, 2)
+
+  defp send_probability(state), do: state.send_probability
 
   defp selected?(0), do: false
   defp selected?(probability), do: :rand.uniform() <= probability

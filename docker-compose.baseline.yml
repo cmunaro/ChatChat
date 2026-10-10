@@ -1,0 +1,76 @@
+# Isolated 12-CPU baseline. Use only with docker-compose.yml and a fresh project.
+# CPU sets reserve backend compute independently of generators and HAProxy.
+services:
+  postgres:
+    cpuset: '8'
+    cpus: 1
+    mem_limit: 2g
+    ports: !override ['127.0.0.1:25432:5432']
+    environment:
+      POSTGRES_DB: chatchat_baseline
+      POSTGRES_USER: chatchat
+      POSTGRES_PASSWORD: chatchat
+  redis:
+    cpuset: '9'
+    cpus: 1
+    mem_limit: 1g
+    ports: !override ['127.0.0.1:26379:6379']
+  tcp:
+    image: chatchat-task3-tcp
+    cpuset: '0-3'
+    cpus: 2
+    mem_limit: 8g
+    environment:
+      DATABASE_URL: ecto://chatchat:chatchat@postgres/chatchat_baseline
+      ERL_AFLAGS: '+S 2:2 +SDcpu 1 +SDio 1 +MHacful de +MBacful de'
+  web:
+    image: chatchat-task3-web
+    cpuset: '10'
+    cpus: 1
+    mem_limit: 1g
+    ports: !override ['127.0.0.1:24000:4000']
+    environment:
+      DATABASE_URL: ecto://chatchat:chatchat@postgres/chatchat_baseline
+      ERL_AFLAGS: '+S 1:1 +SDcpu 1 +SDio 1'
+  haproxy:
+    cpuset: '7'
+    cpus: 1
+    mem_limit: 2g
+    ports: !override ['127.0.0.1:24040:4040', '127.0.0.1:28404:8404']
+  prometheus:
+    cpuset: '11'
+    cpus: 1
+    mem_limit: 1g
+    ports: !override ['127.0.0.1:29090:9090']
+  provision:
+    image: chatchat-task3-web
+    cpuset: '10'
+    cpus: 1
+    mem_limit: 1g
+    command: ['eval', 'IO.puts(Jason.encode!(%{schedulers: :erlang.system_info(:schedulers_online), run_queues: :erlang.statistics(:run_queue_lengths), otp: List.to_string(:erlang.system_info(:otp_release)), elixir: System.version()})); ChatchatBroker.Release.migrate(); {:ok, _} = Application.ensure_all_started(:chatchat_broker); ChatchatBroker.LoadTestProvisioner.run(80000)']
+    environment:
+      DATABASE_URL: ecto://chatchat:chatchat@postgres/chatchat_baseline
+      ERL_AFLAGS: '+S 1:1 +SDcpu 1 +SDio 1'
+  loadgen:
+    image: chatchat-task3-loadgen
+    cpuset: '4-6'
+    cpus: 1.5
+    mem_limit: 4g
+    environment:
+      ERL_AFLAGS: '+S 2:2 +SDcpu 1 +SDio 1 +MHacful de +MBacful de'
+      CLIENTS_PER_LOADGEN: '${BASELINE_CLIENTS_PER_SHARD:-5000}'
+      # Two shards; third barrier participant holds activity until runner verifies sockets.
+      LOADGEN_PARTICIPANTS: '3'
+      LOAD_TEST_RUN_ID: '${BASELINE_RUN_ID:-task3}'
+      LOAD_TEST_CONNECT_TIMEOUT_SECONDS: '240'
+      LOAD_TEST_DURATION_SECONDS: '3600'
+      SEND_PROBABILITY: '0.0'
+      DISCONNECTION_PROBABILITY: '0.0'
+      CLIENT_CREATION_CONCURRENCY: '20'
+      CLIENT_RAMP_INTERVAL_MS: '5'
+  grafana:
+    profiles: ['unused']
+networks:
+  loadtest:
+    ipam:
+      config: !override [{subnet: 172.29.0.0/16}]

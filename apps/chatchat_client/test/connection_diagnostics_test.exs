@@ -147,7 +147,13 @@ defmodule ChatchatClient.ConnectionDiagnosticsTest do
   end
 
   test "simulation status aggregates fixed counters without losing existing fields" do
-    {:ok, simulation} = Simulator.init(%{number_of_clients: 1, username_prefix: nil})
+    {:ok, simulation} =
+      Simulator.init(%{
+        number_of_clients: 1,
+        username_prefix: nil,
+        send_message_probability_per_second: 0
+      })
+
     wrapper = %{connection_counts: simulation.connection_counts}
 
     for event <- [
@@ -163,6 +169,9 @@ defmodule ChatchatClient.ConnectionDiagnosticsTest do
 
     assert {:reply, status, ^simulation} = Simulator.handle_call(:status, nil, simulation)
     assert status.queued_messages == 0
+    assert status.unique_confirmed_messages == 0
+    assert status.retry_attempts == 0
+    assert Jason.decode!(Jason.encode!(status))["confirmation_latency_ms"]["buckets"]["100"] == 0
     assert status.connection_diagnostics.reconnects == %{attempted: 1, ok: 1, failed: 2}
     assert status.connection_diagnostics.disconnects.peer_close == 1
     assert status.connection_diagnostics.reconnect_failures.activate == 1

@@ -40,15 +40,23 @@ defmodule ChatchatClient.Simulator do
   def init(options) do
     {:ok, supervisor} = DynamicSupervisor.start_link(strategy: :one_for_one)
 
+    activity_options = :ets.new(:activity_options, [:set, :protected, read_concurrency: true])
+
+    :ets.insert(
+      activity_options,
+      {:send_probability, options.send_message_probability_per_second}
+    )
+
     clients = :ets.new(:simulated_clients, [:set, :public])
     prefix = options.username_prefix || "sim_#{System.unique_integer([:positive])}"
 
     state = %{
       options: options,
       supervisor: supervisor,
-      result_counts: :atomics.new(5, signed: false),
+      result_counts: :atomics.new(15, signed: false),
       connection_counts: ConnectionDiagnostics.new(),
       clients: clients,
+      activity_options: activity_options,
       prefix: prefix,
       started: 0,
       startup_failures: 0,
@@ -76,12 +84,36 @@ defmodule ChatchatClient.Simulator do
       failed_attempts: :atomics.get(state.result_counts, 3),
       rejected_messages: :atomics.get(state.result_counts, 4),
       submission_failures: :atomics.get(state.result_counts, 5),
+      message_attempts: :atomics.get(state.result_counts, 14),
+      retry_attempts: :atomics.get(state.result_counts, 15),
+      unique_confirmed_messages: :atomics.get(state.result_counts, 6),
+      confirmation_latency_ms: %{
+        count: :atomics.get(state.result_counts, 6),
+        sum: :atomics.get(state.result_counts, 7),
+        buckets:
+          Map.new(
+            Enum.zip(
+              [10, 50, 100, 500, 1_000, 10_000],
+              Enum.map(8..13, &:atomics.get(state.result_counts, &1))
+            )
+          )
+      },
       connection_diagnostics: ConnectionDiagnostics.snapshot(state.connection_counts),
       phase: phase(state)
     }
 
     {:reply, status, state}
   end
+
+  def handle_call({:set_send_probability, probability}, _from, state)
+      when is_number(probability) and probability >= 0 and probability <= 1 do
+    :ets.insert(state.activity_options, {:send_probability, probability})
+    options = Map.put(state.options, :send_message_probability_per_second, probability)
+    {:reply, :ok, %{state | options: options}}
+  end
+
+  def handle_call({:set_send_probability, _invalid}, _from, state),
+    do: {:reply, {:error, :invalid_probability}, state}
 
   def handle_call(:start_activity, _from, state) do
     if phase(state) == :ready do
@@ -190,6 +222,7 @@ defmodule ChatchatClient.Simulator do
       user_id: user_id,
       simulator: self(),
       clients: state.clients,
+      activity_options: state.activity_options,
       result_counts: state.result_counts,
       connection_counts: state.connection_counts,
       number_of_clients: state.options.number_of_clients,

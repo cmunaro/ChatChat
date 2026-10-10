@@ -62,6 +62,10 @@ defmodule ChatchatClient do
   @spec start_simulation_activity(pid()) :: :ok | {:error, atom()}
   def start_simulation_activity(simulation), do: GenServer.call(simulation, :start_activity)
 
+  @spec set_simulation_send_probability(pid(), number()) :: :ok | {:error, :invalid_probability}
+  def set_simulation_send_probability(simulation, probability),
+    do: GenServer.call(simulation, {:set_send_probability, probability})
+
   @spec disconnect(pid()) :: :ok
   def disconnect(client), do: GenServer.cast(client, :disconnect)
 
@@ -375,6 +379,15 @@ defmodule ChatchatClient do
         end
 
       if match?({^request, _timer}, state.inflight[id]) do
+        if status == :ok and Map.get(state, :result_observer) do
+          {:value, entry} = :gb_trees.lookup(id, state.store.outbox)
+
+          send(
+            state.result_observer,
+            {:delivery_confirmed, System.monotonic_time(:millisecond) - entry.queued_at}
+          )
+        end
+
         state = finish_attempt(state, id, request, status, response["reason"])
 
         if observer = Map.get(state, :result_observer),
@@ -415,6 +428,10 @@ defmodule ChatchatClient do
     request = Ecto.UUID.generate()
 
     {:ok, store} = Store.begin_attempt(state.store, entry.message_id, request)
+
+    if observer = Map.get(state, :result_observer),
+      do: send(observer, {:delivery_attempt, entry.failures > 0})
+
     state = %{state | store: store}
     timer = Process.send_after(self(), {:send_timeout, entry.message_id, request}, 10_000)
     state = %{state | inflight: Map.put(state.inflight, entry.message_id, {request, timer})}

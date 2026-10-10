@@ -45,7 +45,12 @@ defmodule ChatchatClient.SimulatorTest do
   end
 
   test "a simulation supervisor starts without a shared store" do
-    options = %{number_of_clients: 1, username_prefix: nil}
+    options = %{
+      number_of_clients: 1,
+      username_prefix: nil,
+      send_message_probability_per_second: 0
+    }
+
     {:ok, state} = Simulator.init(options)
 
     try do
@@ -83,6 +88,31 @@ defmodule ChatchatClient.SimulatorTest do
     assert Enum.map(1..5, &:atomics.get(counts, &1)) == [0, 2, 1, 1, 0]
   end
 
+  test "attempt accounting distinguishes retries" do
+    counts = :atomics.new(15, signed: false)
+    state = %{result_counts: counts}
+
+    for retry? <- [false, true, true] do
+      assert {:noreply, ^state} =
+               ChatchatClient.SimulatedClient.handle_info({:delivery_attempt, retry?}, state)
+    end
+
+    assert :atomics.get(counts, 14) == 3
+    assert :atomics.get(counts, 15) == 2
+  end
+
+  test "unique confirmations record bounded cumulative latency buckets" do
+    counts = :atomics.new(13, signed: false)
+    state = %{result_counts: counts}
+
+    for latency <- [5, 70, 15_000] do
+      assert {:noreply, ^state} =
+               ChatchatClient.SimulatedClient.handle_info({:delivery_confirmed, latency}, state)
+    end
+
+    assert Enum.map(6..13, &:atomics.get(counts, &1)) == [3, 15_075, 1, 1, 2, 2, 2, 2]
+  end
+
   test "a dead client counts a submission failure without crashing its wrapper" do
     client = spawn(fn -> :ok end)
     monitor = Process.monitor(client)
@@ -105,6 +135,51 @@ defmodule ChatchatClient.SimulatorTest do
     assert {:noreply, ^state} = ChatchatClient.SimulatedClient.handle_info(:tick, state)
     assert :atomics.get(counts, 5) == 1
     assert :atomics.get(counts, 1) == 0
+  end
+
+  test "one shared traffic control pauses busy wrappers without touching clients or outboxes" do
+    options = %{
+      number_of_clients: 1,
+      username_prefix: nil,
+      send_message_probability_per_second: 1
+    }
+
+    {:ok, simulation} = Simulator.init(options)
+    client = spawn(fn -> :ok end)
+    monitor = Process.monitor(client)
+    assert_receive {:DOWN, ^monitor, :process, ^client, _}
+    :ets.insert(simulation.clients, {1, self(), 42})
+
+    wrapper = %{
+      client: client,
+      clients: simulation.clients,
+      activity_options: simulation.activity_options,
+      number_of_clients: 1,
+      send_probability: 1,
+      disconnection_probability: 0,
+      message: "test",
+      result_counts: simulation.result_counts
+    }
+
+    try do
+      assert {:reply, :ok, paused} =
+               Simulator.handle_call({:set_send_probability, 0}, nil, simulation)
+
+      assert paused.options.send_message_probability_per_second == 0
+      assert {:noreply, ^wrapper} = ChatchatClient.SimulatedClient.handle_info(:tick, wrapper)
+      assert :atomics.get(simulation.result_counts, 5) == 0
+      assert :ets.info(simulation.clients, :size) == 1
+
+      assert {:reply, {:error, :invalid_probability}, ^paused} =
+               Simulator.handle_call({:set_send_probability, 2}, nil, paused)
+
+      assert :ets.lookup_element(simulation.activity_options, :send_probability, 2) == 0
+      assert {:reply, :ok, _} = Simulator.handle_call({:set_send_probability, 1}, nil, paused)
+      assert {:noreply, ^wrapper} = ChatchatClient.SimulatedClient.handle_info(:tick, wrapper)
+      assert :atomics.get(simulation.result_counts, 5) == 1
+    after
+      Supervisor.stop(simulation.supervisor)
+    end
   end
 
   @tag timeout: 10_000
