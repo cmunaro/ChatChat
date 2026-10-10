@@ -126,11 +126,17 @@ defmodule ChatchatClient.SimulatedClient do
         :ok
 
       recipient ->
-        result = ChatchatClient.send_message(state.client, recipient, state.message)
+        result = submit_message(state, recipient)
         index = if match?({:ok, _message_id}, result), do: 1, else: 5
         :atomics.add(state.result_counts, index, 1)
         result
     end
+  end
+
+  defp submit_message(state, recipient) do
+    ChatchatClient.send_message(state.client, recipient, state.message)
+  catch
+    :exit, reason -> {:error, reason}
   end
 
   defp random_recipient(_state, 0), do: nil

@@ -50,6 +50,11 @@ defmodule ChatchatClient.LoadGenerator do
 
     if Process.alive?(state.simulation), do: schedule_poll()
     {:noreply, state}
+  catch
+    :exit, {:timeout, {GenServer, :call, _arguments}} ->
+      unless state.barrier_announced, do: enforce_connect_deadline!(state, %{phase: :connecting})
+      schedule_poll()
+      {:noreply, state}
   end
 
   defp announce_ready(%{barrier_announced: false} = state, %{phase: :ready}) do

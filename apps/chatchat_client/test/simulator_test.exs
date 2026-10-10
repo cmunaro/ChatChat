@@ -82,4 +82,54 @@ defmodule ChatchatClient.SimulatorTest do
 
     assert Enum.map(1..5, &:atomics.get(counts, &1)) == [0, 2, 1, 1, 0]
   end
+
+  test "a dead client counts a submission failure without crashing its wrapper" do
+    client = spawn(fn -> :ok end)
+    monitor = Process.monitor(client)
+    assert_receive {:DOWN, ^monitor, :process, ^client, _}
+
+    clients = :ets.new(:clients, [:set])
+    :ets.insert(clients, {1, self(), 42})
+    counts = :atomics.new(5, signed: false)
+
+    state = %{
+      client: client,
+      clients: clients,
+      number_of_clients: 1,
+      send_probability: 1,
+      disconnection_probability: 0,
+      message: "test",
+      result_counts: counts
+    }
+
+    assert {:noreply, ^state} = ChatchatClient.SimulatedClient.handle_info(:tick, state)
+    assert :atomics.get(counts, 5) == 1
+    assert :atomics.get(counts, 1) == 0
+  end
+
+  @tag timeout: 10_000
+  test "a slow status poll does not crash the load generator" do
+    owner = self()
+
+    simulation =
+      spawn_link(fn ->
+        receive do
+          {:"$gen_call", _from, :status} -> send(owner, :status_requested)
+        end
+
+        receive do
+          :stop -> :ok
+        end
+      end)
+
+    state = %{simulation: simulation, barrier_announced: true}
+
+    try do
+      assert {:noreply, ^state} = ChatchatClient.LoadGenerator.handle_info(:poll, state)
+      assert_received :status_requested
+      assert Process.alive?(simulation)
+    after
+      send(simulation, :stop)
+    end
+  end
 end
