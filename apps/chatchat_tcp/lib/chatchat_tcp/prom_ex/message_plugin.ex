@@ -1,29 +1,55 @@
 defmodule ChatchatTcp.PromEx.MessagePlugin do
   use PromEx.Plugin
 
-  alias ChatchatBroker.Storage.MessagesStore
-  alias ChatchatTcp.{Delivery, MessageDelivery, Presence}
+  alias ChatchatTcp.Presence
+  alias ChatchatTcp.PromEx.RuntimeCollector
 
   @impl true
   def event_metrics(_options) do
-    Event.build(:chatchat_message_results, [
-      counter([:chatchat, :messages, :results, :total],
-        event_name: [:chatchat, :message, :result],
-        measurement: :count,
-        tags: [:status, :reason],
-        description: "Confirmed receipt/commit, retryable failure, or permanent rejection."
+    Event.build(
+      :chatchat_message_results,
+      [
+        counter([:chatchat, :messages, :results, :total],
+          event_name: [:chatchat, :message, :result],
+          measurement: :count,
+          tags: [:status, :reason],
+          description: "Confirmed receipt/commit, retryable failure, or permanent rejection."
+        ),
+        counter([:chatchat, :inbox, :receipts, :total],
+          event_name: [:chatchat, :inbox, :receipt],
+          measurement: :count,
+          description: "Authorized durable receipt ACKs for stored messages."
+        ),
+        counter([:chatchat, :tcp, :connections, :total],
+          event_name: [:chatchat, :tcp, :connection, :opened],
+          measurement: :count,
+          description: "Accepted TCP connections."
+        )
+      ] ++ collection_metrics()
+    )
+  end
+
+  defp collection_metrics do
+    [
+      last_value([:chatchat, :runtime, :collection, :last_success_timestamp_seconds],
+        event_name: [:chatchat, :runtime, :collection],
+        measurement: :last_success,
+        tags: [:source],
+        description: "Unix time of the last successful source collection."
       ),
-      counter([:chatchat, :inbox, :receipts, :total],
-        event_name: [:chatchat, :inbox, :receipt],
-        measurement: :count,
-        description: "Authorized durable receipt ACKs for stored messages."
+      last_value([:chatchat, :runtime, :collection, :success],
+        event_name: [:chatchat, :runtime, :collection],
+        measurement: :success,
+        tags: [:source],
+        description: "Whether the latest source collection succeeded."
       ),
-      counter([:chatchat, :tcp, :connections, :total],
-        event_name: [:chatchat, :tcp, :connection, :opened],
+      counter([:chatchat, :runtime, :collection, :failures, :total],
+        event_name: [:chatchat, :runtime, :collection, :failed],
         measurement: :count,
-        description: "Accepted TCP connections."
+        tags: [:source],
+        description: "Failed or timed-out source collections."
       )
-    ])
+    ]
   end
 
   @impl true
@@ -58,14 +84,13 @@ defmodule ChatchatTcp.PromEx.MessagePlugin do
   end
 
   def execute_poll do
-    snapshot = Delivery.metric_snapshot() |> Map.merge(MessageDelivery.metric_snapshot())
+    :telemetry.execute(
+      [:chatchat, :runtime, :snapshot],
+      %{connected_clients: Presence.connection_count()},
+      %{}
+    )
 
-    snapshot =
-      Map.merge(snapshot, %{
-        connected_clients: Presence.connection_count(),
-        postgres_undelivered_messages: MessagesStore.count_undelivered()
-      })
-
-    :telemetry.execute([:chatchat, :runtime, :snapshot], snapshot, %{})
+    RuntimeCollector.emit_health(:connections, 1, System.system_time(:second))
+    RuntimeCollector.poll()
   end
 end

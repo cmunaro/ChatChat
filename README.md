@@ -77,6 +77,20 @@ Create an admin: `mix chatchat.admin.create admin`.
 | HAProxy metrics | http://localhost:8404/metrics |
 
 Prometheus discovers TCP replicas; Grafana aggregates their metrics.
+Local connection metrics poll every five seconds independently of delivery and
+PostgreSQL. Background collections have a two-second limit and one task per source.
+Runtime gauges require successful collection within 15 seconds and an exporter
+that is up; unavailable totals display `Unknown / stale`. PostgreSQL pending rows
+use the maximum fresh observation because TCP replicas share the database.
+The runtime collection health panel shows freshness by node and source.
+
+Validate runtime dashboard queries with synthetic data (requires `promtool`):
+
+```sh
+python3 observability/test_dashboard.py promtool
+# With the existing Prometheus container; no live data is modified:
+python3 observability/test_dashboard.py docker exec -i chatchat-prometheus-1 /bin/promtool
+```
 
 ## Client simulation
 

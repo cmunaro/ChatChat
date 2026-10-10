@@ -96,7 +96,8 @@
                 "color": "green"
               }
             ]
-          }
+          },
+          "noValue": "Unknown / stale"
         },
         "overrides": []
       },
@@ -105,7 +106,7 @@
         "graphMode": "area",
         "reduceOptions": {
           "calcs": [
-            "lastNotNull"
+            "last"
           ],
           "fields": "",
           "values": false
@@ -113,12 +114,13 @@
       },
       "targets": [
         {
-          "expr": "sum(chatchat_tcp_connected_clients)",
+          "expr": "sum((chatchat_tcp_connected_clients and on (job, instance) (chatchat_runtime_collection_success{source=\"connections\"} == 1 and on (job, instance, source) (time() - chatchat_runtime_collection_last_success_timestamp_seconds{source=\"connections\"} < 15) and on (job, instance) (up{job=\"chatchat_tcp\"} == 1)))) and on () (count((chatchat_runtime_collection_success{source=\"connections\"} == 1 and on (job, instance, source) (time() - chatchat_runtime_collection_last_success_timestamp_seconds{source=\"connections\"} < 15) and on (job, instance) (up{job=\"chatchat_tcp\"} == 1))) == count(up{job=\"chatchat_tcp\"}))",
           "instant": true,
           "legendFormat": "Connected",
           "refId": "A"
         }
-      ]
+      ],
+      "description": "Runtime values require successful collection within 15 seconds and a healthy scrape. Node totals require every discovered TCP exporter. PostgreSQL is a shared database and uses the maximum fresh observation."
     },
     {
       "id": 3,
@@ -154,7 +156,8 @@
                 "value": 1000
               }
             ]
-          }
+          },
+          "noValue": "Unknown / stale"
         },
         "overrides": []
       },
@@ -163,7 +166,7 @@
         "graphMode": "area",
         "reduceOptions": {
           "calcs": [
-            "lastNotNull"
+            "last"
           ],
           "fields": "",
           "values": false
@@ -171,16 +174,19 @@
       },
       "targets": [
         {
-          "expr": "max(chatchat_postgres_undelivered_messages)",
+          "expr": "max((chatchat_postgres_undelivered_messages and on (job, instance) (chatchat_runtime_collection_success{source=\"postgres\"} == 1 and on (job, instance, source) (time() - chatchat_runtime_collection_last_success_timestamp_seconds{source=\"postgres\"} < 15) and on (job, instance) (up{job=\"chatchat_tcp\"} == 1))))",
           "legendFormat": "PostgreSQL",
-          "refId": "A"
+          "refId": "A",
+          "instant": true
         },
         {
-          "expr": "sum(chatchat_delivery_attempts)",
+          "expr": "sum((chatchat_delivery_attempts and on (job, instance) (chatchat_runtime_collection_success{source=\"sender\"} == 1 and on (job, instance, source) (time() - chatchat_runtime_collection_last_success_timestamp_seconds{source=\"sender\"} < 15) and on (job, instance) (up{job=\"chatchat_tcp\"} == 1)))) and on () (count((chatchat_runtime_collection_success{source=\"sender\"} == 1 and on (job, instance, source) (time() - chatchat_runtime_collection_last_success_timestamp_seconds{source=\"sender\"} < 15) and on (job, instance) (up{job=\"chatchat_tcp\"} == 1))) == count(up{job=\"chatchat_tcp\"}))",
           "legendFormat": "Active attempts",
-          "refId": "B"
+          "refId": "B",
+          "instant": true
         }
-      ]
+      ],
+      "description": "Runtime values require successful collection within 15 seconds and a healthy scrape. Node totals require every discovered TCP exporter. PostgreSQL is a shared database and uses the maximum fresh observation."
     },
     {
       "id": 4,
@@ -197,7 +203,9 @@
         "y": 0
       },
       "fieldConfig": {
-        "defaults": {},
+        "defaults": {
+          "noValue": "Unknown / stale"
+        },
         "overrides": []
       },
       "options": {
@@ -205,7 +213,7 @@
         "graphMode": "area",
         "reduceOptions": {
           "calcs": [
-            "lastNotNull"
+            "last"
           ],
           "fields": "",
           "values": false
@@ -213,18 +221,19 @@
       },
       "targets": [
         {
-          "expr": "sum(chatchat_delivery_active_workers)",
+          "expr": "sum((chatchat_delivery_active_workers and on (job, instance) (chatchat_runtime_collection_success{source=\"inbox\"} == 1 and on (job, instance, source) (time() - chatchat_runtime_collection_last_success_timestamp_seconds{source=\"inbox\"} < 15) and on (job, instance) (up{job=\"chatchat_tcp\"} == 1)))) and on () (count((chatchat_runtime_collection_success{source=\"inbox\"} == 1 and on (job, instance, source) (time() - chatchat_runtime_collection_last_success_timestamp_seconds{source=\"inbox\"} < 15) and on (job, instance) (up{job=\"chatchat_tcp\"} == 1))) == count(up{job=\"chatchat_tcp\"}))",
           "instant": true,
           "legendFormat": "Active",
           "refId": "A"
         },
         {
-          "expr": "sum(chatchat_delivery_pending_receivers)",
+          "expr": "sum((chatchat_delivery_pending_receivers and on (job, instance) (chatchat_runtime_collection_success{source=\"inbox\"} == 1 and on (job, instance, source) (time() - chatchat_runtime_collection_last_success_timestamp_seconds{source=\"inbox\"} < 15) and on (job, instance) (up{job=\"chatchat_tcp\"} == 1)))) and on () (count((chatchat_runtime_collection_success{source=\"inbox\"} == 1 and on (job, instance, source) (time() - chatchat_runtime_collection_last_success_timestamp_seconds{source=\"inbox\"} < 15) and on (job, instance) (up{job=\"chatchat_tcp\"} == 1))) == count(up{job=\"chatchat_tcp\"}))",
           "instant": true,
           "legendFormat": "Pending",
           "refId": "B"
         }
-      ]
+      ],
+      "description": "Runtime values require successful collection within 15 seconds and a healthy scrape. Node totals require every discovered TCP exporter. PostgreSQL is a shared database and uses the maximum fresh observation."
     },
     {
       "id": 5,
@@ -353,7 +362,8 @@
       },
       "fieldConfig": {
         "defaults": {
-          "min": 0
+          "min": 0,
+          "noValue": "Unknown / stale"
         },
         "overrides": []
       },
@@ -368,21 +378,22 @@
       },
       "targets": [
         {
-          "expr": "sum(chatchat_delivery_receipts)",
+          "expr": "sum((chatchat_delivery_receipts and on (job, instance) (chatchat_runtime_collection_success{source=\"sender\"} == 1 and on (job, instance, source) (time() - chatchat_runtime_collection_last_success_timestamp_seconds{source=\"sender\"} < 15) and on (job, instance) (up{job=\"chatchat_tcp\"} == 1)))) and on () (count((chatchat_runtime_collection_success{source=\"sender\"} == 1 and on (job, instance, source) (time() - chatchat_runtime_collection_last_success_timestamp_seconds{source=\"sender\"} < 15) and on (job, instance) (up{job=\"chatchat_tcp\"} == 1))) == count(up{job=\"chatchat_tcp\"}))",
           "legendFormat": "Outstanding receipts",
           "refId": "A"
         },
         {
-          "expr": "sum(chatchat_delivery_fallback_workers)",
+          "expr": "sum((chatchat_delivery_fallback_workers and on (job, instance) (chatchat_runtime_collection_success{source=\"sender\"} == 1 and on (job, instance, source) (time() - chatchat_runtime_collection_last_success_timestamp_seconds{source=\"sender\"} < 15) and on (job, instance) (up{job=\"chatchat_tcp\"} == 1)))) and on () (count((chatchat_runtime_collection_success{source=\"sender\"} == 1 and on (job, instance, source) (time() - chatchat_runtime_collection_last_success_timestamp_seconds{source=\"sender\"} < 15) and on (job, instance) (up{job=\"chatchat_tcp\"} == 1))) == count(up{job=\"chatchat_tcp\"}))",
           "legendFormat": "Routing/fallback/delete workers",
           "refId": "B"
         },
         {
-          "expr": "sum(chatchat_delivery_waiting)",
+          "expr": "sum((chatchat_delivery_waiting and on (job, instance) (chatchat_runtime_collection_success{source=\"sender\"} == 1 and on (job, instance, source) (time() - chatchat_runtime_collection_last_success_timestamp_seconds{source=\"sender\"} < 15) and on (job, instance) (up{job=\"chatchat_tcp\"} == 1)))) and on () (count((chatchat_runtime_collection_success{source=\"sender\"} == 1 and on (job, instance, source) (time() - chatchat_runtime_collection_last_success_timestamp_seconds{source=\"sender\"} < 15) and on (job, instance) (up{job=\"chatchat_tcp\"} == 1))) == count(up{job=\"chatchat_tcp\"}))",
           "legendFormat": "Waiting attempts",
           "refId": "C"
         }
-      ]
+      ],
+      "description": "Runtime values require successful collection within 15 seconds and a healthy scrape. Node totals require every discovered TCP exporter. PostgreSQL is a shared database and uses the maximum fresh observation."
     },
     {
       "id": 9,
@@ -753,7 +764,8 @@
       },
       "fieldConfig": {
         "defaults": {
-          "min": 0
+          "min": 0,
+          "noValue": "Unknown / stale"
         },
         "overrides": []
       },
@@ -768,11 +780,12 @@
       },
       "targets": [
         {
-          "expr": "sum(chatchat_delivery_loaded_bytes)",
+          "expr": "sum((chatchat_delivery_loaded_bytes and on (job, instance) (chatchat_runtime_collection_success{source=\"inbox\"} == 1 and on (job, instance, source) (time() - chatchat_runtime_collection_last_success_timestamp_seconds{source=\"inbox\"} < 15) and on (job, instance) (up{job=\"chatchat_tcp\"} == 1)))) and on () (count((chatchat_runtime_collection_success{source=\"inbox\"} == 1 and on (job, instance, source) (time() - chatchat_runtime_collection_last_success_timestamp_seconds{source=\"inbox\"} < 15) and on (job, instance) (up{job=\"chatchat_tcp\"} == 1))) == count(up{job=\"chatchat_tcp\"}))",
           "legendFormat": "Bytes",
           "refId": "A"
         }
-      ]
+      ],
+      "description": "Runtime values require successful collection within 15 seconds and a healthy scrape. Node totals require every discovered TCP exporter. PostgreSQL is a shared database and uses the maximum fresh observation."
     },
     {
       "id": 17,
@@ -952,6 +965,64 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "id": 21,
+      "title": "Runtime collection health",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 24,
+        "x": 0,
+        "y": 55
+      },
+      "description": "Fresh means collection succeeded within 15 seconds and exporter is up. Failed, expired, or missing collections are shown per discovered node/source. No discovered exporters means Unknown / stale.",
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "Unknown / stale",
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "Failed / stale",
+                  "color": "red"
+                },
+                "1": {
+                  "text": "Fresh",
+                  "color": "green"
+                }
+              }
+            }
+          ],
+          "min": 0,
+          "max": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {
+          "calcs": [
+            "last"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "expr": "((chatchat_runtime_collection_success == bool 1) * on (job, instance, source) (time() - chatchat_runtime_collection_last_success_timestamp_seconds < bool 15) * on (job, instance) group_left() up{job=\"chatchat_tcp\"}) or on (job, instance, source) (label_replace(0 * up{job=\"chatchat_tcp\"}, \"source\", \"connections\", \"job\", \".*\") or label_replace(0 * up{job=\"chatchat_tcp\"}, \"source\", \"inbox\", \"job\", \".*\") or label_replace(0 * up{job=\"chatchat_tcp\"}, \"source\", \"sender\", \"job\", \".*\") or label_replace(0 * up{job=\"chatchat_tcp\"}, \"source\", \"postgres\", \"job\", \".*\"))",
+          "instant": true,
+          "legendFormat": "{{instance}} {{source}}",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "5s",
@@ -969,5 +1040,5 @@
   "timezone": "browser",
   "title": "ChatChat Overview",
   "uid": "chatchat-overview",
-  "version": 7
+  "version": 8
 }

@@ -30,6 +30,9 @@ defmodule ChatchatTcp.Application do
       metrics_server = Application.fetch_env!(:chatchat_tcp, :metrics_server)
 
       [
+        # rest_for_one restarts the task supervisor if its owning collector dies.
+        ChatchatTcp.PromEx.RuntimeCollector,
+        {Task.Supervisor, name: ChatchatTcp.PromEx.TaskSupervisor, max_children: 3},
         ChatchatTcp.PromEx,
         {Bandit,
          plug: {PromEx.Plug, prom_ex_module: ChatchatTcp.PromEx},

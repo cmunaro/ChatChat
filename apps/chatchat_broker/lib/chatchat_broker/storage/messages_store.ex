@@ -86,4 +86,9 @@ defmodule ChatchatBroker.Storage.MessagesStore do
 
   @spec count_undelivered() :: non_neg_integer()
   def count_undelivered, do: Repo.aggregate(Message, :count, :message_id)
+
+  @spec count_undelivered(pos_integer()) :: non_neg_integer()
+  def count_undelivered(timeout)
+      when is_integer(timeout) and timeout > 0 and timeout <= @timeout,
+      do: Repo.aggregate(Message, :count, :message_id, timeout: timeout)
 end
