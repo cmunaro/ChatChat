@@ -26,7 +26,7 @@ tcp_port="${TCP_PORT:-4040}"
 postgres_db="${POSTGRES_DB:-chatchat_dev}"
 postgres_user="${POSTGRES_USER:-chatchat}"
 postgres_password="${POSTGRES_PASSWORD:-chatchat}"
-database_url="ecto://${postgres_user}:${postgres_password}@db:5432/${postgres_db}"
+database_url="ecto://${postgres_user}:${postgres_password}@postgres:5432/${postgres_db}"
 secret_key_base="${SECRET_KEY_BASE:-$(openssl rand -hex 64)}"
 
 for image in "$web_image" "$broker_image" "$tcp_image"; do
@@ -36,10 +36,10 @@ for image in "$web_image" "$broker_image" "$tcp_image"; do
   fi
 done
 
-docker compose up -d db
+docker compose up -d postgres
 
 echo "Waiting for PostgreSQL..."
-until docker compose exec -T db sh -c 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"' >/dev/null 2>&1; do
+until docker compose exec -T postgres sh -c 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"' >/dev/null 2>&1; do
   sleep 1
 done
 

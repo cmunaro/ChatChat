@@ -95,12 +95,15 @@ defmodule ChatchatClient.Socket do
            "message" => payload,
            "inserted_at" => timestamp,
            "receipt_id" => receipt
-         },
-         %{store: store, user_id: user}
+         } = message,
+         %{store: store, user_id: user} = context
        ) do
     with {:ok, ^receipt} <- Ecto.UUID.cast(receipt),
-         {:ok, _saved_or_duplicate} <-
+         {:ok, saved_or_duplicate} <-
            Store.receive_message(store, user, sender, id, payload, timestamp) do
+      if saved_or_duplicate == :saved && Map.has_key?(context, :on_message),
+        do: context.on_message.(message)
+
       send_frame(socket, %{
         type: "message_delivered_ack",
         from_user_id: sender,

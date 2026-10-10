@@ -10,8 +10,14 @@ config :chatchat_auth, secret_key_base: secret_key_base
 
 config :open_api_spex, :cache_adapter, OpenApiSpex.Plug.NoneCache
 
+# Local Docker services use the standard PostgreSQL and Redis ports.
+# Keep development state separate from the test database and Redis DB 15.
+redis_url = System.get_env("REDIS_URL", "redis://localhost:6379/0")
+config :chatchat_tcp, redis_url: redis_url
+config :chatchat_web, redis_url: redis_url
+
 config :chatchat_broker, ChatchatBroker.Repo,
-  url: System.get_env("DATABASE_URL", "ecto://chatchat:chatchat@localhost/chatchat_dev"),
+  url: System.get_env("DATABASE_URL", "ecto://chatchat:chatchat@localhost:5432/chatchat_dev"),
   pool_size: 10,
   show_sensitive_data_on_connection_error: true,
   stacktrace: true

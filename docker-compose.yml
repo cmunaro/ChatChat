@@ -1,15 +1,15 @@
 name: chatchat
 
 services:
-  db:
+  postgres:
     image: postgres:18.6
     restart: unless-stopped
     environment:
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-chatchat_dev}
+      POSTGRES_USER: ${POSTGRES_USER:-chatchat}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-chatchat}
     ports:
-      - "${POSTGRES_PORT}:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql
     healthcheck:
@@ -47,7 +47,7 @@ services:
         BUILDER_IMAGE: hexpm/elixir:1.20.4-erlang-29.0.5-debian-bookworm-20260824-slim
         RELEASE_NAME: chatchat_web
     environment:
-      DATABASE_URL: "ecto://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db/${POSTGRES_DB}"
+      DATABASE_URL: "ecto://${POSTGRES_USER:-chatchat}:${POSTGRES_PASSWORD:-chatchat}@postgres/${POSTGRES_DB:-chatchat_dev}"
       SECRET_KEY_BASE: "1234567890123456789012345678901234567890123456789012345678901234"
       PROMETHEUS_URL: "http://prometheus:9090"
       REDIS_URL: "redis://redis:6379"
@@ -55,7 +55,7 @@ services:
     ports:
       - "4000:4000"
     depends_on:
-      db:
+      postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -72,16 +72,16 @@ services:
         BUILDER_IMAGE: hexpm/elixir:1.20.4-erlang-29.0.5-debian-bookworm-20260824-slim
         RELEASE_NAME: chatchat_tcp
     environment:
-      DATABASE_URL: "ecto://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db/${POSTGRES_DB}"
+      DATABASE_URL: "ecto://${POSTGRES_USER:-chatchat}:${POSTGRES_PASSWORD:-chatchat}@postgres/${POSTGRES_DB:-chatchat_dev}"
       REDIS_URL: "redis://redis:6379"
       SECRET_KEY_BASE: "1234567890123456789012345678901234567890123456789012345678901234"
       ERL_AFLAGS: "+MHacful de +MBacful de"
       TCP_PORT: "4040"
       METRICS_PORT: "9568"
       TCP_CLUSTER_DNS: tcp
-      RELEASE_COOKIE: "${TCP_CLUSTER_COOKIE:?Set TCP_CLUSTER_COOKIE for the private TCP cluster}"
+      RELEASE_COOKIE: "${TCP_CLUSTER_COOKIE:-}"
     depends_on:
-      db:
+      postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -115,14 +115,14 @@ services:
       - eval
       - "File.rm_rf!(\"/barrier/#{System.fetch_env!(\"LOAD_TEST_RUN_ID\")}\"); ChatchatBroker.Release.migrate(); {:ok, _} = Application.ensure_all_started(:chatchat_broker); ChatchatBroker.LoadTestProvisioner.run(150000)"
     environment:
-      DATABASE_URL: "ecto://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db/${POSTGRES_DB}"
+      DATABASE_URL: "ecto://${POSTGRES_USER:-chatchat}:${POSTGRES_PASSWORD:-chatchat}@postgres/${POSTGRES_DB:-chatchat_dev}"
       SECRET_KEY_BASE: "1234567890123456789012345678901234567890123456789012345678901234"
       RELEASE_NAME: chatchat_web
       LOAD_TEST_RUN_ID: "${LOAD_TEST_RUN_ID:-150k}"
     volumes:
       - loadtest_barrier:/barrier
     depends_on:
-      db:
+      postgres:
         condition: service_healthy
     networks:
       - loadtest

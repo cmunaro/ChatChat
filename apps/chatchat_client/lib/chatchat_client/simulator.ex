@@ -249,7 +249,10 @@ defmodule ChatchatClient.Simulator do
   defp start_activity(state) do
     state.supervisor
     |> DynamicSupervisor.which_children()
-    |> Enum.each(fn {_id, wrapper, _type, _modules} -> send(wrapper, :start_activity) end)
+    |> Enum.each(fn
+      {_id, wrapper, _type, [SimulatedClient]} -> send(wrapper, :start_activity)
+      _child -> :ok
+    end)
 
     schedule_stop(state.options.duration_seconds)
     %{state | activity_started: true}

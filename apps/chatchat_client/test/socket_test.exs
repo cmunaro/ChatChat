@@ -74,6 +74,8 @@ defmodule ChatchatClient.SocketTest do
       receipt_id: Ecto.UUID.generate()
     }
 
+    owner = self()
+
     task =
       Task.async(fn ->
         assert {:ok, _} = :gen_tcp.recv(server, 0, 1_000)
@@ -94,10 +96,16 @@ defmodule ChatchatClient.SocketTest do
     assert {:ok, %{"type" => "pong"}} =
              Socket.request(client, %{type: "ping"}, &match?(%{"type" => "pong"}, &1), %{
                store: store,
-               user_id: 2
+               user_id: 2,
+               on_message: fn message ->
+                 assert {:ok, [[1, ^id, "hello", _]]} = Store.inbox(store, 2)
+                 send(owner, {:received_message, message})
+               end
              })
 
     Task.await(task)
+    assert_received {:received_message, %{"message_id" => ^id, "message" => "hello"}}
+    refute_received {:received_message, _}
   end
 
   test "durable write failure sends no receipt ACK", %{store: store, pid: pid} do

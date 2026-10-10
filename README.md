@@ -72,8 +72,9 @@ Elixir distributed real-time chat exercise.
 
 ## Start up
 
-Create and migrate the database:
+Start local PostgreSQL (5432) and Redis (6379), then create and migrate the database:
 ```sh
+docker compose up -d redis postgres
 mix ecto.create
 mix ecto.migrate
 mix phx.server
@@ -150,7 +151,7 @@ Dedicated disposable integration services:
 ```sh
 docker compose -p chatchat-delivery-tests -f docker-compose.test.yml up -d --wait
 export TEST_DATABASE_URL=ecto://chatchat:chatchat@localhost:15432/chatchat_test
-export TEST_REDIS_URL=redis://localhost:16379/15
+export TEST_REDIS_URL=redis://localhost:6379/15
 MIX_ENV=test mix ecto.migrate
 ```
 
@@ -238,5 +239,5 @@ to resume a suspended user. Remove namespace files only after stopping their sto
 intentionally abandoning that run's recovery and deduplication history.
 
 Dedicated integration services are defined in `docker-compose.test.yml` (PostgreSQL port
-15432 and Redis port 16379, DB 15). Set `TEST_DATABASE_URL` and `TEST_REDIS_URL` to these
+15432 and Redis port 6379, DB 15). Set `TEST_DATABASE_URL` and `TEST_REDIS_URL` to these
 isolated services and run `MIX_ENV=test mix ecto.migrate` before integration tests.

@@ -244,8 +244,11 @@ defmodule ChatchatClient do
 
       case Store.result(state.store, state.user_id, id, request, status, response["reason"]) do
         :ok ->
-          if observer = Map.get(state, :result_observer),
-            do: send(observer, {:delivery_result, status})
+          if observer = Map.get(state, :result_observer) do
+            send(observer, {:delivery_result, status})
+          else
+            IO.puts("#{state.username} delivery result: #{inspect(response, pretty: true)}")
+          end
 
           {:noreply, %{state | inflight: Map.delete(state.inflight, id)}}
 
@@ -326,7 +329,11 @@ defmodule ChatchatClient do
     %{
       store: state.store,
       user_id: state.user_id,
-      on_result: fn response -> send(owner, {:message_result, response}) end
+      on_result: fn response -> send(owner, {:message_result, response}) end,
+      on_message: fn message ->
+        unless Map.get(state, :result_observer),
+          do: IO.puts("#{state.username} received message: #{inspect(message, pretty: true)}")
+      end
     }
   end
 
