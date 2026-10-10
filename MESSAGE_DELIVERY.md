@@ -1,9 +1,9 @@
 # Message delivery
 
 Delivery is at least once. The identity is `(authenticated sender_id, client message_id)`.
-The sender commits its immutable receiver and payload to a SQLite outbox before sending.
+The mocked sender records its immutable receiver and payload in an in-memory outbox before sending.
 Each transmission uses a fresh request UUID. Until a matching `ok`, that outbox owns recovery.
-`ok` means an authenticated receiver saved the message or PostgreSQL committed a pending row.
+`ok` means an authenticated receiver accepted the message in memory or PostgreSQL committed a pending row.
 A failure or missing response can still have delivered a copy; retry preserves the identity.
 
 See [wire frames and precise limits](MESSAGE_DELIVERY_CONTRACT.md),
@@ -27,7 +27,7 @@ Offline, stale, unavailable, or unconfirmed routes fall back to PostgreSQL. Comp
 uniqueness serializes concurrent inserts; locked content checks reject conflicting reuse and
 preserve the winning timestamp. Success is reported only after commit. Every confirmed insert
 wakes the receiver's current route. A receipt racing with an insert can leave a pending row;
-normal inbox delivery and durable receiver deduplication safely handle that extra copy.
+normal inbox delivery and receiver deduplication safely handle that extra copy.
 
 The result deadline is eight seconds including queue time. Routing, insertion, and deletion
 share 32 workers. A running write keeps its reservation even if the sender disconnects or
@@ -44,17 +44,21 @@ A staggered local reconciliation pass visits connected receivers in batches of 1
 every 30 seconds. Lost hints, commit-before-notification crashes, and worker failures therefore
 leave PostgreSQL ownership intact. No Redis keyspace scan is needed.
 
-## Durable client behavior
+## Per-client behavior
 
-One SQLite owner per namespace uses WAL and FULL synchronous durability. Outbox commit precedes
-network send. Inbox content and composite deduplication commit atomically before ACK; saved
-duplicates ACK again. Conflicting content or a failed write never receives an ACK.
+Each client owns in-memory outbox, inbox deduplication, and suspension state. `Store` is a
+pure helper, not a GenServer. Outbox insertion precedes network send. Inbox content and
+composite deduplication are recorded before ACK; duplicates ACK again and conflicts never ACK.
+Interleaved messages/results update that same client state during ping and online queries,
+including when the query subsequently fails. No shared store admission or storage retry exists.
 
 Matching `ok` removes an outbox entry. Failure, disconnect, and a ten-second unknown-outcome
-timeout schedule bounded backoff (one to thirty seconds plus jitter). Reconnect and restart
-recover the same identity. Permanent rejection remains stored, while uncorrelated protocol
-errors durably suspend a user's automatic sends until explicit resume. There is no retry cutoff,
-ordering guarantee, history synchronization, or automatic deduplication expiry.
+timeout schedule bounded backoff (one to thirty seconds plus jitter). Disconnect/reconnect
+preserves identity; client-process restart clears all state. Mocked receipt has no disk
+durability. Permanent rejections remain available through `ChatchatClient.outbox/1`, while
+uncorrelated protocol errors suspend automatic sends until `ChatchatClient.resume/1`.
+There is no retry cutoff, ordering guarantee, history synchronization, or automatic
+inbox deduplication expiry.
 
 ## Resource and crash bounds
 
@@ -66,14 +70,14 @@ or receiver coordinator death. Socket sends time out after one second.
 
 Inbox loaded pages have an 8 MiB aggregate budget. Wake ingress, coalesced pending receivers,
 retry timers, and cursor metadata each cap at 4,096. Full hint queues rely on reconciliation.
-Client store ingress caps at 256 operations and 2 MiB; indexed pages cap at 128. An application
-has its interactive store and at most 16 isolated simulation stores. Durable disk datasets grow
-with outstanding outbox work and retained inbox deduplication; they are not loaded wholesale.
+Each client caps its outbox at 128 entries and inflight attempts at 16; full outbox submissions
+return capacity errors. Indexed inbox and outbox pages cap at 128. At most 16 simulations
+run per application. Retained inbox deduplication grows in memory until its client stops.
 
 A one-for-all delivery supervision group restarts coordinators, workers, scheduler, and TCP
 connection producers together so old payload producers cannot outlive replacement budgets.
 Redis owns only presence. PostgreSQL owns pending messages until authorized receipt cleanup;
-SQLite owns sender recovery and durable receiver deduplication.
+each client owns sender recovery and receiver deduplication while its process lives.
 
 ## Deployment and monitoring
 

@@ -1,6 +1,4 @@
 defmodule ChatchatClient.Socket do
-  alias ChatchatClient.Store
-
   def connect(token) do
     options = [
       :binary,
@@ -18,12 +16,13 @@ defmodule ChatchatClient.Socket do
   end
 
   def activate(socket), do: :inet.setopts(socket, active: :once)
-  def request(socket, request, matcher, context \\ nil)
-  def request(nil, _request, _matcher, _context), do: {:error, :disconnected}
+  def request(nil, _request, _matcher, state), do: {:error, :disconnected, state}
 
-  def request(socket, request, matcher, context) do
-    with :ok <- send_frame(socket, request),
-         do: receive_response(socket, matcher, context, deadline())
+  def request(socket, request, matcher, state) do
+    case send_frame(socket, request) do
+      :ok -> receive_response(socket, matcher, state, deadline())
+      {:error, reason} -> {:error, reason, state}
+    end
   end
 
   def send_frame(nil, _payload), do: {:error, :disconnected}
@@ -36,10 +35,17 @@ defmodule ChatchatClient.Socket do
       else: {:error, :frame_too_large}
   end
 
-  def handle_incoming(socket, line, context) do
+  def handle_incoming(socket, line, state) do
     case decode(line) do
-      {:ok, response} -> handle_decoded(socket, response, context)
-      {:error, _reason} -> suspend_invalid(context)
+      {:ok, response} ->
+        ChatchatClient.handle_response(socket, response, state)
+
+      {:error, _reason} ->
+        ChatchatClient.handle_response(
+          socket,
+          %{"type" => "error", "error" => "invalid_response"},
+          state
+        )
     end
   end
 
@@ -62,105 +68,46 @@ defmodule ChatchatClient.Socket do
     result
   end
 
-  defp receive_response(socket, matcher, context, deadline) do
+  defp receive_response(socket, matcher, state, deadline) do
     receive do
       {:tcp, ^socket, line} ->
-        with {:ok, response} <- decode(line) do
-          if matcher.(response) do
-            with :ok <- activate(socket), do: {:ok, response}
-          else
-            with :ok <- handle_decoded(socket, response, context),
-                 :ok <- activate(socket) do
-              receive_response(socket, matcher, context, deadline)
+        case decode(line) do
+          {:ok, response} ->
+            if matcher.(response) do
+              case activate(socket) do
+                :ok -> {:ok, response, state}
+                {:error, reason} -> {:error, reason, state}
+              end
+            else
+              case ChatchatClient.handle_response(socket, response, state) do
+                {:ok, state} ->
+                  case activate(socket) do
+                    :ok -> receive_response(socket, matcher, state, deadline)
+                    {:error, reason} -> {:error, reason, state}
+                  end
+
+                {:error, reason, state} ->
+                  {:error, reason, state}
+              end
             end
-          end
+
+          {:error, _reason} ->
+            ChatchatClient.handle_response(
+              socket,
+              %{"type" => "error", "error" => "invalid_response"},
+              state
+            )
         end
 
       {:tcp_closed, ^socket} ->
-        {:error, :closed}
+        {:error, :closed, state}
 
       {:tcp_error, ^socket, reason} ->
-        {:error, reason}
+        {:error, reason, state}
     after
-      max(deadline - System.monotonic_time(:millisecond), 0) -> {:error, :timeout}
+      max(deadline - System.monotonic_time(:millisecond), 0) -> {:error, :timeout, state}
     end
   end
-
-  defp handle_decoded(
-         socket,
-         %{
-           "type" => "message",
-           "message_id" => id,
-           "from_user_id" => sender,
-           "message" => payload,
-           "inserted_at" => timestamp,
-           "receipt_id" => receipt
-         } = message,
-         %{store: store, user_id: user} = context
-       ) do
-    with {:ok, ^receipt} <- Ecto.UUID.cast(receipt),
-         {:ok, saved_or_duplicate} <-
-           Store.receive_message(store, user, sender, id, payload, timestamp) do
-      if saved_or_duplicate == :saved && Map.has_key?(context, :on_message),
-        do: context.on_message.(message)
-
-      send_frame(socket, %{
-        type: "message_delivered_ack",
-        from_user_id: sender,
-        message_id: id,
-        receipt_id: receipt
-      })
-    else
-      error -> {:error, {:receive_storage, error}}
-    end
-  end
-
-  defp handle_decoded(_socket, %{"type" => "message_result"} = response, %{
-         on_result: callback,
-         store: store,
-         user_id: user
-       }) do
-    valid =
-      match?({:ok, _}, Ecto.UUID.cast(response["request_id"])) and
-        match?({:ok, _}, Ecto.UUID.cast(response["message_id"])) and
-        (response["status"] == "ok" or
-           (response["status"] == "failed" and response["reason"] in ["capacity", "unavailable"]) or
-           (response["status"] == "rejected" and
-              response["reason"] in ["invalid_request", "invalid_receiver", "identity_conflict"]))
-
-    if valid do
-      callback.(response)
-      :ok
-    else
-      suspend_invalid(%{store: store, user_id: user})
-    end
-  end
-
-  defp handle_decoded(_socket, %{"type" => "error", "error" => reason}, %{
-         store: store,
-         user_id: user
-       }) do
-    reason =
-      if is_binary(reason) and byte_size(reason) <= 128, do: reason, else: "invalid_response"
-
-    case Store.suspend(store, user, reason) do
-      :ok -> {:error, {:protocol_suspended, reason}}
-      error -> {:error, {:suspension_storage, error}}
-    end
-  end
-
-  defp handle_decoded(_socket, %{"type" => "pong"}, _context), do: :ok
-  defp handle_decoded(_socket, %{"is_online" => value}, _context) when is_boolean(value), do: :ok
-  defp handle_decoded(_socket, _response, context), do: suspend_invalid(context)
-
-  defp suspend_invalid(%{store: store, user_id: user}) do
-    handle_decoded(nil, %{"type" => "error", "error" => "invalid_response"}, %{
-      store: store,
-      user_id: user
-    })
-  end
-
-  defp suspend_invalid(_context), do: {:error, :invalid_response}
 
   defp decode(line) do
     if byte_size(line) <= 4_097 do

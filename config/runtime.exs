@@ -66,10 +66,6 @@ if config_env() == :prod do
     load_generator_id = System.fetch_env!("HOSTNAME")
     run_id = System.get_env("LOAD_TEST_RUN_ID", "default")
 
-    config :chatchat_client, :store,
-      root: System.fetch_env!("CLIENT_STATE_ROOT"),
-      namespace: System.fetch_env!("CLIENT_STATE_NAMESPACE")
-
     config :chatchat_client,
       http_url: System.get_env("HTTP_URL", "http://web:4000"),
       tcp_host: System.get_env("TCP_HOST", "tcp"),

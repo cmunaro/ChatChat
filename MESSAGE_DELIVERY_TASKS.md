@@ -7,6 +7,11 @@ Follow `AGENTS.md`. Preserve unrelated changes. Add migrations, do not rewrite a
 Update consumers together when switching the protocol. Do not introduce a permanent dual delivery
 mode. Each task includes focused regression tests; task 9 verifies the complete system.
 
+> Client persistence requirements below are superseded: mocked clients now use an
+> per-client in-memory state at the user's request. Disconnect/reconnect preserves it;
+> client stop/crash clears it. No shared store process remains. See MESSAGE_DELIVERY.md
+> and MESSAGE_DELIVERY_CONTRACT.md for the current client contract.
+
 ## Dependencies and execution
 
 Complete task 1 first. Tasks 2, 3, and 4 can then proceed independently against its contract.

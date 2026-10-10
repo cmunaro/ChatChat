@@ -2,34 +2,18 @@ defmodule ChatchatClient.SocketTest do
   use ExUnit.Case, async: true
   alias ChatchatClient.{Socket, Store}
 
-  setup do
-    pid =
-      start_supervised!(
-        {Store,
-         [
-           root: Path.join(System.tmp_dir!(), "chatchat-socket-tests"),
-           namespace: Ecto.UUID.generate(),
-           name: nil
-         ]}
-      )
-
-    %{store: Store.handle(pid), pid: pid}
+  defp state do
+    %{store: Store.new(2), user_id: 2, username: "test", inflight: %{}, result_observer: self()}
   end
 
-  test "matches both IDs and passes late results to the bounded client lifecycle", %{store: store} do
+  test "interleaved confirmations update state before the request completes" do
     {client, server} = connected_sockets()
     :ok = Socket.activate(client)
+    {:ok, id, store} = Store.put_outbox(Store.new(2), 1, "hello")
     request = Ecto.UUID.generate()
-    id = Ecto.UUID.generate()
-    owner = self()
-
-    context = %{
-      store: store,
-      user_id: 2,
-      on_result: fn result -> send(owner, {:result, result}) end
-    }
-
-    late = Ecto.UUID.generate()
+    {:ok, store} = Store.begin_attempt(store, id, request)
+    timer = Process.send_after(self(), :unused_timeout, 10_000)
+    state = %{state() | store: store, inflight: %{id => {request, timer}}}
 
     task =
       Task.async(fn ->
@@ -37,7 +21,7 @@ defmodule ChatchatClient.SocketTest do
 
         send_json(server, %{
           type: "message_result",
-          request_id: late,
+          request_id: Ecto.UUID.generate(),
           message_id: id,
           status: "ok"
         })
@@ -48,21 +32,77 @@ defmodule ChatchatClient.SocketTest do
           message_id: id,
           status: "ok"
         })
+
+        send_json(server, %{type: "pong"})
       end)
 
-    matcher =
-      &match?(%{"type" => "message_result", "request_id" => ^request, "message_id" => ^id}, &1)
+    assert {:ok, %{"type" => "pong"}, state} =
+             Socket.request(client, %{type: "ping"}, &match?(%{"type" => "pong"}, &1), state)
 
-    assert {:ok, %{"request_id" => ^request}} =
-             Socket.request(client, %{type: "ping"}, matcher, context)
-
-    assert_receive {:result, %{"request_id" => ^late}}
+    assert Store.outbox(state.store) == []
+    assert state.inflight == %{}
+    assert_receive {:delivery_result, :ok}
+    refute_received {:delivery_result, _}
     Task.await(task)
   end
 
-  test "interleaved receive commits before ACK and duplicates ACK again", %{store: store} do
+  for ending <- [:pong, :closed, :invalid] do
+    @ending ending
+    test "interleaved inbox state survives #{@ending} and duplicates ACK again" do
+      {client, server} = connected_sockets()
+      :ok = Socket.activate(client)
+      id = Ecto.UUID.generate()
+
+      frame = %{
+        type: "message",
+        message_id: id,
+        from_user_id: 1,
+        message: "hello",
+        inserted_at: "2026-10-09T10:00:00Z",
+        receipt_id: Ecto.UUID.generate()
+      }
+
+      task =
+        Task.async(fn ->
+          assert {:ok, _} = :gen_tcp.recv(server, 0, 1_000)
+
+          for _ <- 1..2 do
+            send_json(server, frame)
+            assert {:ok, line} = :gen_tcp.recv(server, 0, 1_000)
+            assert %{"type" => "message_delivered_ack", "message_id" => ^id} = Jason.decode!(line)
+          end
+
+          case @ending do
+            :pong -> send_json(server, %{type: "pong"})
+            :closed -> :gen_tcp.close(server)
+            :invalid -> :gen_tcp.send(server, "invalid JSON\n")
+          end
+        end)
+
+      result = Socket.request(client, %{type: "ping"}, &match?(%{"type" => "pong"}, &1), state())
+
+      returned_state =
+        case @ending do
+          :pong ->
+            assert {:ok, %{"type" => "pong"}, state} = result
+            state
+
+          :closed ->
+            assert {:error, :closed, state} = result
+            state
+
+          :invalid ->
+            assert {:error, {:protocol_suspended, "invalid_response"}, state} = result
+            state
+        end
+
+      assert Store.inbox(returned_state.store) == [[1, id, "hello", "2026-10-09T10:00:00Z"]]
+      Task.await(task)
+    end
+  end
+
+  test "conflicting received content is not acknowledged" do
     {client, server} = connected_sockets()
-    :ok = Socket.activate(client)
     id = Ecto.UUID.generate()
 
     frame = %{
@@ -70,99 +110,56 @@ defmodule ChatchatClient.SocketTest do
       message_id: id,
       from_user_id: 1,
       message: "hello",
-      inserted_at: "2026-10-09T10:00:00.000000Z",
-      receipt_id: Ecto.UUID.generate()
-    }
-
-    owner = self()
-
-    task =
-      Task.async(fn ->
-        assert {:ok, _} = :gen_tcp.recv(server, 0, 1_000)
-
-        for _ <- 1..2 do
-          send_json(server, frame)
-          assert {:ok, line} = :gen_tcp.recv(server, 0, 1_000)
-
-          assert %{"type" => "message_delivered_ack", "message_id" => ^id, "from_user_id" => 1} =
-                   Jason.decode!(line)
-
-          assert {:ok, [[1, ^id, "hello", _]]} = Store.inbox(store, 2)
-        end
-
-        send_json(server, %{type: "pong"})
-      end)
-
-    assert {:ok, %{"type" => "pong"}} =
-             Socket.request(client, %{type: "ping"}, &match?(%{"type" => "pong"}, &1), %{
-               store: store,
-               user_id: 2,
-               on_message: fn message ->
-                 assert {:ok, [[1, ^id, "hello", _]]} = Store.inbox(store, 2)
-                 send(owner, {:received_message, message})
-               end
-             })
-
-    Task.await(task)
-    assert_received {:received_message, %{"message_id" => ^id, "message" => "hello"}}
-    refute_received {:received_message, _}
-  end
-
-  test "durable write failure sends no receipt ACK", %{store: store, pid: pid} do
-    {client, server} = connected_sockets()
-    %{db: db} = :sys.get_state(pid)
-    :ok = Exqlite.Sqlite3.execute(db, "PRAGMA query_only=ON")
-
-    frame = %{
-      type: "message",
-      message_id: Ecto.UUID.generate(),
-      from_user_id: 1,
-      message: "unsaved",
       inserted_at: "2026-10-09T10:00:00Z",
       receipt_id: Ecto.UUID.generate()
     }
 
-    assert {:error, {:receive_storage, _}} =
-             Socket.handle_incoming(client, Jason.encode!(frame), %{store: store, user_id: 2})
+    assert {:ok, state} = Socket.handle_incoming(client, Jason.encode!(frame), state())
+    assert {:ok, _} = :gen_tcp.recv(server, 0, 1_000)
+
+    assert {:error, {:receive_storage, {:error, :identity_conflict}}, ^state} =
+             Socket.handle_incoming(client, Jason.encode!(%{frame | message: "changed"}), state)
 
     assert {:error, :timeout} = :gen_tcp.recv(server, 0, 50)
-    assert {:ok, []} = Store.inbox(store, 2)
   end
 
-  test "uncorrelated error durably suspends the user's automatic sends", %{store: store} do
+  test "ACK send failure still returns the recorded inbox state" do
     {client, _server} = connected_sockets()
-    assert {:ok, _} = Store.put_outbox(store, 2, 1, "retained")
+    :ok = Socket.close(client)
+    id = Ecto.UUID.generate()
 
-    assert {:error, {:protocol_suspended, "invalid_request"}} =
-             Socket.handle_incoming(
-               client,
-               Jason.encode!(%{type: "error", error: "invalid_request"}),
-               %{store: store, user_id: 2}
-             )
-
-    assert {:ok, "invalid_request"} = Store.suspension(store, 2)
-    assert {:ok, []} = Store.pending(store, 2)
-    assert {:ok, [_]} = Store.outbox(store, 2)
-  end
-
-  test "malformed server results and error reasons safely suspend retries", %{store: store} do
-    {client, _server} = connected_sockets()
-
-    context = %{
-      store: store,
-      user_id: 2,
-      on_result: fn _ -> flunk("invalid result forwarded") end
+    frame = %{
+      type: "message",
+      message_id: id,
+      from_user_id: 1,
+      message: "hello",
+      inserted_at: "2026-10-09T10:00:00Z",
+      receipt_id: Ecto.UUID.generate()
     }
 
+    assert {:error, :closed, state} =
+             Socket.handle_incoming(client, Jason.encode!(frame), state())
+
+    assert Store.inbox(state.store) == [[1, id, "hello", "2026-10-09T10:00:00Z"]]
+  end
+
+  test "uncorrelated and malformed responses suspend automatic retries" do
+    {client, _server} = connected_sockets()
+    {:ok, _id, store} = Store.put_outbox(Store.new(2), 1, "retained")
+    state = %{state() | store: store}
+
     for frame <- [
+          %{type: "error", error: "invalid_request"},
           %{type: "error", error: %{unexpected: true}},
           %{type: "message_result", status: "ok"},
           %{type: "unknown"}
         ] do
-      assert {:error, {:protocol_suspended, "invalid_response"}} =
-               Socket.handle_incoming(client, Jason.encode!(frame), context)
+      assert {:error, {:protocol_suspended, reason}, state} =
+               Socket.handle_incoming(client, Jason.encode!(frame), state)
 
-      assert {:ok, "invalid_response"} = Store.suspension(store, 2)
+      assert state.store.suspension == reason
+      assert Store.pending(state.store) == []
+      assert length(Store.outbox(state.store)) == 1
     end
   end
 

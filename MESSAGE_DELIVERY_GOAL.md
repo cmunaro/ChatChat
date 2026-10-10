@@ -10,6 +10,11 @@ Implement this architecture across the backend and mocked clients. There is no p
 compatibility requirement. Read `AGENTS.md` and the affected implementation before editing.
 `MESSAGE_DELIVERY.md` describes the implemented receipt-or-commit lifecycle.
 
+> Client persistence requirements below are superseded: mocked clients now use an
+> per-client in-memory state at the user's request. Disconnect/reconnect preserves it;
+> client stop/crash clears it. No shared store process remains. See MESSAGE_DELIVERY.md
+> and MESSAGE_DELIVERY_CONTRACT.md for the current client contract.
+
 ## Ownership and results
 
 Delivery is at least once, with durable client deduplication. Until `ok`, the sender owns recovery

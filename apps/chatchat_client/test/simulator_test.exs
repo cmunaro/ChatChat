@@ -3,15 +3,8 @@ defmodule ChatchatClient.SimulatorTest do
 
   alias ChatchatClient.Simulator
 
-  test "starting activity targets client wrappers and leaves the durable store alive" do
+  test "starting activity targets client wrappers" do
     supervisor = start_supervised!({DynamicSupervisor, strategy: :one_for_one})
-
-    {:ok, store} =
-      DynamicSupervisor.start_child(
-        supervisor,
-        {ChatchatClient.Store,
-         root: System.tmp_dir!(), namespace: Ecto.UUID.generate(), name: nil}
-      )
 
     owner = self()
 
@@ -49,7 +42,19 @@ defmodule ChatchatClient.SimulatorTest do
              Simulator.handle_call(:start_activity, nil, state)
 
     assert_receive :activity_started
-    assert {:ok, []} = ChatchatClient.Store.inbox(ChatchatClient.Store.handle(store), 1)
+  end
+
+  test "a simulation supervisor starts without a shared store" do
+    options = %{number_of_clients: 1, username_prefix: nil}
+    {:ok, state} = Simulator.init(options)
+
+    try do
+      assert DynamicSupervisor.count_children(state.supervisor).active == 0
+      refute Map.has_key?(state, :store_server)
+      refute Map.has_key?(state, :state_namespace)
+    after
+      Supervisor.stop(state.supervisor)
+    end
   end
 
   test "counts startup failures by their preserved reason" do

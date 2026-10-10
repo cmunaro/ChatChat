@@ -8,7 +8,7 @@ defmodule ChatchatClient.LoadGenerator do
   @impl true
   def init(options) do
     File.mkdir_p!(Keyword.fetch!(options, :barrier_directory))
-    shard = claim_shard!(options)
+    shard = acquire_shard!(options)
 
     first_user_id =
       Keyword.fetch!(options, :first_user_id) + shard * Keyword.fetch!(options, :clients)
@@ -24,8 +24,7 @@ defmodule ChatchatClient.LoadGenerator do
         message_payload_size: Keyword.fetch!(options, :message_payload_size),
         username_prefix: Keyword.fetch!(options, :id),
         first_user_id: first_user_id,
-        auto_start_activity: false,
-        reuse_application_store: true
+        auto_start_activity: false
       })
 
     state = %{
@@ -86,25 +85,6 @@ defmodule ChatchatClient.LoadGenerator do
   end
 
   defp enforce_connect_deadline!(_state, _status), do: :ok
-
-  defp claim_shard!(options) do
-    store = ChatchatClient.Store.handle()
-
-    case ChatchatClient.Store.load_shard(store) do
-      {:ok, nil} ->
-        shard = acquire_shard!(options)
-        :ok = ChatchatClient.Store.save_shard(store, shard)
-        shard
-
-      {:ok, shard} ->
-        if shard < Keyword.fetch!(options, :participants),
-          do: shard,
-          else: raise("saved shard is outside this run's participant range")
-
-      error ->
-        raise "could not recover durable shard assignment: #{inspect(error)}"
-    end
-  end
 
   defp acquire_shard!(options) do
     claims_directory = Path.join(Keyword.fetch!(options, :barrier_directory), "claims")

@@ -89,13 +89,9 @@ defmodule ChatchatClient.SimulatedClient do
   defp start_client(state) do
     client =
       if state.user_id do
-        ChatchatClient.run_preprovisioned(state.username, state.user_id,
-          store_server: state.store_server,
-          result_observer: self()
-        )
+        ChatchatClient.run_preprovisioned(state.username, state.user_id, result_observer: self())
       else
         ChatchatClient.run(state.username,
-          store_server: state.store_server,
           result_observer: self()
         )
       end

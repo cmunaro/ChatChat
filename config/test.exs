@@ -1,9 +1,5 @@
 import Config
 
-config :chatchat_client, :store,
-  root: Path.join(System.tmp_dir!(), "chatchat-client-tests"),
-  namespace: "test-" <> Base.encode16(:crypto.strong_rand_bytes(16), case: :lower)
-
 secret_key_base = "1234567890123456789012345678901234567890123456789012345678901234"
 
 config :chatchat_auth, secret_key_base: secret_key_base

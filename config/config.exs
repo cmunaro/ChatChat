@@ -9,10 +9,6 @@
 # move said applications out of the umbrella.
 import Config
 
-config :chatchat_client, :store,
-  root: Path.expand("../.client-state", __DIR__),
-  namespace: "interactive"
-
 config :logger, level: :error
 
 config :chatchat_broker,

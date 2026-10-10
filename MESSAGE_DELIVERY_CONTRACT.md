@@ -167,41 +167,30 @@ Reduce page size if the remaining byte budget is smaller. Rotate past stuck rows
 once their receipt window expires. Repeated wakes coalesce to one pending pass; a full pending
 queue drops the hint and relies on reconciliation. No Redis keyspace scans or payload writes.
 
-## Mock client durable storage
+## Mock client state
 
-The client already depends on Ecto, but `mix.lock` contains no SQLite adapter or transactional
-local store. Choose SQLite through `exqlite` for task 4: one database per run namespace,
-indexed by authenticated user. This small dependency provides transactions, indexed paging,
-and crash recovery without loading all deduplication records or opening one file per user.
-OTP DETS would impose a 2 GiB file limit and require custom transactional/index maintenance.
+Each mocked TCP client keeps its own in-memory retry and deduplication data. `Store` is a
+pure helper; there is no shared store process, registry, namespace, admission gate, or database.
+Outbox insertion precedes network send. Inbox content plus `(sender_id, message_id)`
+deduplication are recorded before ACK. Duplicates ACK again; conflicts never ACK.
+Matching `ok` removes an outbox entry. Rejections retain their reason; suspension prevents
+automatic sends until `ChatchatClient.resume(client)`.
 
-Use one supervised store owner and SQLite connection per namespace, with
-WAL mode and `synchronous=FULL`. Commit outbox rows before any network send. An inbox row
-with primary key `(user_id, sender_id, message_id)` holds payload and deduplication together;
-one transaction inserts or verifies the existing immutable content before permitting ACK.
-Retain inbox identities indefinitely. Delete outbox only on a matching `ok`; permanent
-rejections remain stored with their reason and are excluded from automatic retry queries.
-Store the per-user automatic-send suspension and its error durably in the same namespace;
-recovery checks it before scheduling outbox entries.
-Recover pending rows using indexed pages, not a full-table load. Retry has no attempt cutoff.
+Each client caps its outbox at 128 entries, including retained rejections, and inflight
+attempts at 16. Full outbox submission returns `{:error, :capacity}`. Ordered trees index
+outbox IDs, retry times, and inbox identities; reads return at most 128 records. No client
+competes with another for storage permits. Socket requests return updated client state on
+both success and failure, preserving interleaved receives and confirmations.
 
-State path is an explicitly selected writable root plus run UUID; persist the run UUID for
-restart reuse. Ordinary interactive use has a stable namespace. Each simulation/test chooses
-a fresh namespace; shards use distinct namespaces. The authenticated user is part of every
-key/query. Disconnect and normal shutdown never clear state. Cleanup is an explicit stopped-run
-operation. Refuse opening a namespace already owned by another application instance.
-
-Bound store submissions with 256 operations and 2 MiB of reserved bytes before enqueue, using
-backpressure/errors rather than an unbounded GenServer mailbox. SQLITE_BUSY, disk-full, I/O,
-or corruption errors surface as storage failures: no send before outbox commit, no ACK before
-inbox commit, no destructive recovery. Database growth is on disk; loaded pages, connection
-count, and writes remain bounded. Validate SQLite durability and restart behavior with focused
-tests. The interactive namespace plus at most 16 simulations bounds each application to 17
-store connections; each simulation owns a separate namespace to preserve concurrent runs.
+Disconnect/reconnect preserves state. Client stop/crash clears outbox, inbox, deduplication,
+and suspension. Retained inbox records grow in memory for the client's lifetime. The mock
+client deliberately has no restart durability; PostgreSQL server-pending ownership is
+unchanged. Simulations cap at 16 runs. Load-generator restarts claim a new shard from the
+run barrier; restart all generators with a fresh provisioned run.
 
 ## Contract review
 
-Goal acceptance 1–2 maps to receipt/commit results; 3–4 to durable client transactions and retry;
+Goal acceptance 1–2 maps to receipt/commit results; 3–4 to in-memory client transitions and retry;
 5 to exact receipt/session tracking; 6 to broker uniqueness and immutable checks; 7 to bounded
 attempts and retained fallback rows; 8–9 to post-commit wakeups and wrapping reconciliation;
 10 to admission before enqueue and shared byte/count budgets. Tasks 2–9 supply executable

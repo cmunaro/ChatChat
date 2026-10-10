@@ -1,18 +1,7 @@
 defmodule ChatchatClient.RetryTest do
   use ExUnit.Case, async: false
-  alias ChatchatClient.Store
 
   setup do
-    store_pid =
-      start_supervised!(
-        {Store,
-         [
-           root: Path.join(System.tmp_dir!(), "chatchat-retry-tests"),
-           namespace: Ecto.UUID.generate(),
-           name: nil
-         ]}
-      )
-
     {:ok, listener} =
       :gen_tcp.listen(0, [:binary, active: false, packet: :line, ip: {127, 0, 0, 1}])
 
@@ -28,10 +17,10 @@ defmodule ChatchatClient.RetryTest do
         else: Application.delete_env(:chatchat_client, :tcp_port)
     end)
 
-    %{listener: listener, store_pid: store_pid, store: Store.handle(store_pid)}
+    %{listener: listener}
   end
 
-  test "lost response retries the durable identity and ignores an old result", context do
+  test "lost response retries the same identity and ignores an old result", context do
     owner = self()
 
     backend =
@@ -56,25 +45,25 @@ defmodule ChatchatClient.RetryTest do
         :gen_tcp.close(socket)
       end)
 
-    client = ChatchatClient.run_preprovisioned("retry", 1, store_server: context.store_pid)
+    client = ChatchatClient.run_preprovisioned("retry", 1)
     on_exit(fn -> if Process.alive?(client), do: GenServer.stop(client) end)
     assert {:ok, id} = ChatchatClient.send_message(client, 2, "durable")
     assert_receive {:first, first}, 2_000
     assert first["message_id"] == id
-    assert {:ok, [[^id, 2, "durable", nil]]} = Store.outbox(context.store, 1)
+    assert [[^id, 2, "durable", nil]] = ChatchatClient.outbox(client)
     # Exercise the actual ten-second response deadline, not a synthetic event.
     assert_receive {:second, second}, 14_000
     assert second["message_id"] == id
     assert second["request_id"] != first["request_id"]
     Process.sleep(20)
-    assert {:ok, [[^id, 2, "durable", nil]]} = Store.outbox(context.store, 1)
+    assert [[^id, 2, "durable", nil]] = ChatchatClient.outbox(client)
     send(backend.pid, :confirm)
-    eventually(fn -> Store.outbox(context.store, 1) == {:ok, []} end)
+    eventually(fn -> ChatchatClient.outbox(client) == [] end)
     send(backend.pid, :close)
     Task.await(backend)
   end
 
-  test "process restart recovers an unknown-outcome outbox entry", context do
+  test "process restart starts with an empty outbox", context do
     owner = self()
 
     backend =
@@ -100,25 +89,27 @@ defmodule ChatchatClient.RetryTest do
       end)
 
     first_client =
-      ChatchatClient.run_preprovisioned("restart", 1, store_server: context.store_pid)
+      ChatchatClient.run_preprovisioned("restart", 1)
 
     assert {:ok, id} = ChatchatClient.send_message(first_client, 2, "unknown")
     assert_receive {:first, first}, 2_000
     GenServer.stop(first_client)
 
     second_client =
-      ChatchatClient.run_preprovisioned("restart", 1, store_server: context.store_pid)
+      ChatchatClient.run_preprovisioned("restart", 1)
 
     on_exit(fn -> if Process.alive?(second_client), do: GenServer.stop(second_client) end)
-    assert_receive {:recovered, second}, 13_000
-    assert second["message_id"] == id and first["message_id"] == id
-    assert second["request_id"] != first["request_id"]
-    eventually(fn -> Store.outbox(context.store, 1) == {:ok, []} end)
+    assert ChatchatClient.outbox(second_client) == []
+    assert {:ok, new_id} = ChatchatClient.send_message(second_client, 2, "new")
+    assert_receive {:recovered, second}, 2_000
+    assert first["message_id"] == id
+    assert second["message_id"] == new_id and new_id != id
+    eventually(fn -> ChatchatClient.outbox(second_client) == [] end)
     send(backend.pid, :close)
     Task.await(backend)
   end
 
-  test "disconnect recovers the same committed outbox entry", context do
+  test "disconnect retries the same outbox entry", context do
     owner = self()
 
     backend =
@@ -142,12 +133,59 @@ defmodule ChatchatClient.RetryTest do
         :gen_tcp.close(second_socket)
       end)
 
-    client = ChatchatClient.run_preprovisioned("disconnect", 1, store_server: context.store_pid)
+    client = ChatchatClient.run_preprovisioned("disconnect", 1)
     on_exit(fn -> if Process.alive?(client), do: GenServer.stop(client) end)
     assert {:ok, id} = ChatchatClient.send_message(client, 2, "reconnect")
     assert_receive {:retried, first, second}, 5_000
     assert first["message_id"] == id and second["message_id"] == id
-    eventually(fn -> Store.outbox(context.store, 1) == {:ok, []} end)
+    eventually(fn -> ChatchatClient.outbox(client) == [] end)
+    send(backend.pid, :close)
+    Task.await(backend)
+  end
+
+  test "each client keeps at most sixteen inflight attempts", context do
+    owner = self()
+
+    backend =
+      Task.async(fn ->
+        socket = accept(context.listener)
+        frames = for _ <- 1..16, do: receive_send(socket)
+        send(owner, {:inflight, frames})
+
+        receive do
+          :confirm -> :ok
+        end
+
+        send_json(socket, Map.merge(hd(frames), %{"type" => "message_result", "status" => "ok"}))
+        next = receive_send(socket)
+        send(owner, {:next_attempt, next})
+
+        receive do
+          :close -> :ok
+        end
+
+        :gen_tcp.close(socket)
+      end)
+
+    client = ChatchatClient.run_preprovisioned("bounded", 1, result_observer: self())
+    on_exit(fn -> if Process.alive?(client), do: GenServer.stop(client) end)
+
+    ids =
+      for _ <- 1..17 do
+        assert {:ok, id} = ChatchatClient.send_message(client, 2, "bounded")
+        id
+      end
+
+    assert_receive {:inflight, frames}, 2_000
+    assert length(ChatchatClient.outbox(client)) == 17
+    assert map_size(:sys.get_state(client).inflight) == 16
+    send(backend.pid, :confirm)
+    assert_receive {:delivery_result, :ok}, 2_000
+    assert_receive {:next_attempt, next}, 2_000
+    assert next["message_id"] in ids
+    refute Enum.any?(frames, &(&1["message_id"] == next["message_id"]))
+    assert map_size(:sys.get_state(client).inflight) == 16
+    GenServer.stop(client)
     send(backend.pid, :close)
     Task.await(backend)
   end

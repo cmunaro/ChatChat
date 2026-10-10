@@ -222,21 +222,27 @@ docker compose --profile loadtest up -d --build --scale tcp=2 --scale loadgen=4
 Provision runs migrations, creates 150k users, and clears this run's barrier. Each generator starts
 20k clients; traffic starts after all four shards connect.
 
-## Durable mocked-client state
+## Mocked-client state
 
-`ChatchatClient.send_message/3` returns `{:ok, message_id}` after local outbox commit:
-this means queued. A matching server `ok` confirms receipt or PostgreSQL commit and removes
-that outbox entry. Failed, disconnected, and unknown outcomes retry with the same identity.
-Permanent rejections remain available through `ChatchatClient.Store.outbox/2`.
+Each TCP client keeps its own retry and deduplication data in its GenServer state.
+`ChatchatClient.Store` is a pure helper, with no process, registry, shared admission gate,
+or database. `ChatchatClient.send_message/3` returns `{:ok, message_id}` after adding the
+message to that client's outbox. A matching server `ok` confirms receipt or PostgreSQL
+commit and removes it. Failed, disconnected, and unknown outcomes retry the same identity.
+Each client admits at most 128 outbox entries and 16 inflight attempts; a full local outbox
+returns `{:error, :capacity}` without affecting other clients. Permanent rejections remain
+visible through `ChatchatClient.outbox(client)` and count toward the outbox limit.
 
-Interactive development uses `.client-state/interactive.sqlite3`. Releases require
-`CLIENT_STATE_ROOT` and `CLIENT_STATE_NAMESPACE`; reuse both across restarts. Simulation
-runs select isolated namespaces, with at most 16 concurrent runs. Load-generator shards
-persist their assignment in their namespace. Keep the state volume for recovery.
-Inbox deduplication is retained indefinitely. Disconnect never clears durable state.
-After correcting a protocol error, explicitly call `ChatchatClient.Store.resume(store, user_id)`
-to resume a suspended user. Remove namespace files only after stopping their store and
-intentionally abandoning that run's recovery and deduplication history.
+Disconnect/reconnect preserves state. Stopping or crashing the client clears its outbox,
+inbox, deduplication, and suspension; no client restart recovery is promised. Inbox
+identities remain in memory for the client's lifetime and grow with traffic. Read received
+records using `ChatchatClient.inbox(client)`; both inbox and outbox accept a cursor and
+page limit (at most 128). After correcting a protocol error, call
+`ChatchatClient.resume(client)` to resume automatic sends.
+
+Simulations have no shared store or `state_namespace` status field. At most 16 simulation
+runs are allowed. Load generators claim their shard in the run barrier; restarting all
+generators requires a fresh provisioned run.
 
 Dedicated integration services are defined in `docker-compose.test.yml` (PostgreSQL port
 15432 and Redis port 6379, DB 15). Set `TEST_DATABASE_URL` and `TEST_REDIS_URL` to these

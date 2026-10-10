@@ -295,7 +295,7 @@ defmodule ChatchatTcp.MessageDeliveryTest do
     eventually(fn -> ChatchatTcp.Delivery.metric_snapshot().loaded_bytes == 0 end)
   end
 
-  test "mocked client commits before ACK and persists duplicate identity", %{
+  test "mocked client deduplicates until its process restarts", %{
     sender: sender,
     receiver: receiver
   } do
@@ -305,20 +305,20 @@ defmodule ChatchatTcp.MessageDeliveryTest do
     request = request(receiver.id)
     send_json(from, request)
     assert {:ok, %{"status" => "ok"}} = recv(from)
-    store = ChatchatClient.Store.handle()
-    assert {:ok, rows} = ChatchatClient.Store.inbox(store, receiver.id)
+    assert rows = ChatchatClient.inbox(client)
     assert [[sender_id, id, "hello", _timestamp]] = rows
     assert sender_id == sender.id and id == request.message_id
     send_json(from, %{request | request_id: Ecto.UUID.generate()})
     assert {:ok, %{"status" => "ok"}} = recv(from)
-    assert {:ok, ^rows} = ChatchatClient.Store.inbox(store, receiver.id)
+    assert ^rows = ChatchatClient.inbox(client)
     GenServer.stop(client)
     eventually(fn -> not ChatchatTcp.Presence.online?(receiver.id) end)
     restarted = ChatchatClient.run_preprovisioned("unused", receiver.id)
     on_exit(fn -> if Process.alive?(restarted), do: GenServer.stop(restarted) end)
+    assert ChatchatClient.inbox(restarted) == []
     send_json(from, %{request | request_id: Ecto.UUID.generate()})
     assert {:ok, %{"status" => "ok"}} = recv(from)
-    assert {:ok, ^rows} = ChatchatClient.Store.inbox(store, receiver.id)
+    assert [[^sender_id, ^id, "hello", _timestamp]] = ChatchatClient.inbox(restarted)
   end
 
   @tag capture_log: true

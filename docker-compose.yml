@@ -145,8 +145,6 @@ services:
       LOAD_TEST_FIRST_USER_ID: "1500000001"
       LOAD_TEST_RUN_ID: "${LOAD_TEST_RUN_ID:-150k}"
       CLIENT_CREATION_CONCURRENCY: "20"
-      CLIENT_STATE_ROOT: /client-state
-      CLIENT_STATE_NAMESPACE: "load-${LOAD_TEST_RUN_ID:-150k}"
       CLIENT_RAMP_INTERVAL_MS: "5"
       CLIENT_REQUEST_TIMEOUT: "60000"
       LOAD_TEST_CONNECT_TIMEOUT_SECONDS: "21600"
@@ -162,7 +160,6 @@ services:
       net.ipv4.ip_local_port_range: "1024 65535"
     volumes:
       - loadtest_barrier:/barrier
-      - /client-state
     user: "0"
     depends_on:
       provision:
