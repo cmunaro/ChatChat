@@ -55,6 +55,10 @@ defmodule ChatchatClient.Simulator do
       supervisor: supervisor,
       result_counts: :atomics.new(15, signed: false),
       connection_counts: ConnectionDiagnostics.new(),
+      reconnect_admission:
+        ChatchatClient.ConnectionAdmission.new(
+          Map.get(options, :creation_concurrency, @defaults.creation_concurrency)
+        ),
       clients: clients,
       activity_options: activity_options,
       prefix: prefix,
@@ -99,6 +103,7 @@ defmodule ChatchatClient.Simulator do
           )
       },
       connection_diagnostics: ConnectionDiagnostics.snapshot(state.connection_counts),
+      reconnect_admission: ChatchatClient.ConnectionAdmission.snapshot(state.reconnect_admission),
       phase: phase(state)
     }
 
@@ -225,6 +230,7 @@ defmodule ChatchatClient.Simulator do
       activity_options: state.activity_options,
       result_counts: state.result_counts,
       connection_counts: state.connection_counts,
+      reconnect_admission: state.reconnect_admission,
       number_of_clients: state.options.number_of_clients,
       send_probability: state.options.send_message_probability_per_second,
       disconnection_probability: state.options.disconnection_probability_per_second,

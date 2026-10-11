@@ -27,4 +27,26 @@ defmodule ChatchatClient.ReconnectBackoffTest do
     assert intervals.startup.count == 1
     assert Jason.decode!(Jason.encode!(intervals))["reconnect"]["buckets"]["1000"] == 1
   end
+
+  test "connection timing aggregates preserve retry counters and overflow" do
+    counts = ConnectionDiagnostics.new()
+    wrapper = %{connection_counts: counts}
+
+    for duration <- [500, 70_000] do
+      assert {:noreply, ^wrapper} =
+               ChatchatClient.SimulatedClient.handle_info(
+                 {:connection_timing, :first_reconnect_wait, duration},
+                 wrapper
+               )
+    end
+
+    snapshot = ConnectionDiagnostics.snapshot(counts)
+    timing = snapshot.timings_ms.first_reconnect_wait
+    assert timing.count == 2
+    assert timing.sum == 70_500
+    assert timing.buckets[60_000] == 1
+    assert snapshot.retry_intervals_ms.reconnect.count == 0
+    assert snapshot.timings_ms.connect_ok.count == 0
+    assert snapshot.reconnects.attempted == 0
+  end
 end

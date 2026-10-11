@@ -681,3 +681,240 @@ previously failing seed, format, high-priority Credo, warnings-as-errors compile
 17 capture/baseline Python tests, and clean whitespace checks. Changes are local
 and uncommitted. Sustainable throughput beyond approximately 800/s remains
 unproven; no admission, worker, pool, FD, port or backlog limits were increased.
+
+### Task 9: historical health observation gaps
+
+Read-only inspection of the saved final-run `backend-recovery/samples.jsonl`
+found 18 recovery observations. In all 11 reported exporter failures, the
+`exporter_up` query succeeded with HAProxy `up=0` and the backend health query
+returned `no_data`. The corresponding up-query requests completed in approximately
+5–12 ms. These were failed Prometheus-to-HAProxy scrapes, not failed capture
+queries or evidence that every backend was DOWN. Failed observations occurred
+from 11:57:26 to 11:57:56 UTC and 11:58:36 to 11:59:36 UTC; these are sampled
+failure windows, not continuous outage durations or exact health transitions.
+
+Historical capture omitted scrape duration, source scrape timestamps and target
+errors. Timeout versus connection/exporter failure therefore remains unresolved;
+the temporary deployment was already removed. No new load or fault was launched.
+The existing bounded capture now records scrape duration and source timestamps,
+plus the active-target API's last scrape, health and fixed failure categories
+(`timeout`, `connection_refused`, `http_status`, `other`, `none`). It discards raw
+errors and target URLs. The target observation is current at its own probe time,
+whereas PromQL uses the sample timestamp; correlate their recorded times rather
+than assuming an atomic snapshot. Existing response, series, concurrency and
+request-timeout bounds remain in effect. Service-free verification passed all
+15 capture and four baseline tests. Task 9 still needs an authorized isolated
+repeat to attribute scrape failures and measure restoration under reconnect load.
+
+### Task 9 completed: authorized isolated repeat
+
+`/tmp/chatchat-task9-recovery-20261011/` contains the authorized 80k repeat,
+fixed resource/image metadata, raw timestamped observations, complete scans,
+cleanup evidence and `task9-10-analysis.json`. It used the pre-task-10 client
+behavior, 0.01 traffic, two proxy threads and a 30-second DNS-preserving pause.
+No admission, worker, pool, port, descriptor or backlog limits changed.
+
+Stable traffic measured 799.7 confirmations/s, mean 5.1 ms and p95 ≤50 ms.
+During recovery, seven of 18 target observations reported HAProxy scrape
+`timeout`, with roughly five-second scrape duration. Corresponding PromQL queries
+succeeded; TCP scrapes continued. This attributes the observation failure to the
+exporter scrape path under reconnect pressure, not loss of capture queries. It
+does not isolate accept delay from exporter execution or prove proxy process death.
+
+The paused backend was observed DOWN by the 20-second sample; its survivor stayed
+UP in available observations. The first both-UP recovery observation arrived
+50 seconds after resume. Samples at 10/20/30/40 seconds lacked health series, so
+exact restoration cannot be inferred. A second timeout window occurred at the
+80/90/100-second samples. Missing health observations remain unknown, never DOWN
+or UP. Observed check duration peaked at 2.002 seconds. Proxy listener occupancy
+reached 4097 against a 4096 backlog; the recovery namespace listen-drop delta was
+411,481. These counters do not attribute every dropped connection to one listener.
+Presence work p95 approached the 10-second histogram limit and Redis round-trip
+p95 reached 4.38 seconds during recovery, supporting task 10's pressure attribution.
+
+Continuous exact 80k authenticated socket samples resumed 140.0 seconds after
+resume, missing the newly declared 120-second task 10 experimental target. This
+run-to-run difference from the previous 190.5-second result is not a behavior-fix
+claim. All 80,000 clients were scanned: **238,234 admissions = confirmations =
+unique inbox identities**. Unavailable/unscanned clients, outbox, inflight and
+PostgreSQL pending counts were zero. Dedicated cleanup verified `0|0|0` and removed
+temporary containers/volumes. Task 9 meets its acceptance criterion by measuring
+failure categories and explicitly bounding the remaining observation gap.
+
+### Task 10 instrumented control
+
+`/tmp/chatchat-task10-attribution-20261011/` rebuilt clients with bounded timing
+histograms while retaining the existing retry policy and fixed 80k/0.01 workload,
+resource allocation, two-thread proxy and 30-second pause. The new fields measure
+completed operations across the population, rather than the 16-client convenience
+sample. Stable throughput was 797.8 confirmations/s, mean 5.8 ms, p95 ≤50 ms.
+Continuous exact 80k socket observations resumed 120.05 seconds after resume,
+just beyond the declared 120-second experimental target. Ten-second sampling
+cannot establish the exact instant of recovery.
+
+All 40,000 disconnected clients were recorded as ping failures and eventually
+reconnected. Their first scheduled waits averaged 1.215 seconds (p95 upper bucket
+4 seconds); scheduling lateness across all 61,966 attempts averaged 506 ms
+(p95 upper bucket 4 seconds). Successful connect averaged 10.834 seconds and
+successful authentication 17.321 seconds, each with p95 upper bucket 60 seconds.
+Failed authentication averaged 10.126 seconds (p95 upper bucket 30 seconds).
+These wall-clock measurements include scheduling, kernel/network and server work;
+do not add their p95s or equate them with Redis execution time. Existing socket
+timeouts do not guarantee prompt timer handling under runtime pressure.
+
+The control recorded 21,966 failed attempts: 13,092 explicit presence-unavailable
+handshakes, 8,187 other authentication failures and 687 other connect failures.
+Observed explicit ownership rejections and client-reported timeout categories
+were zero; other failures are not further attributed. Repeated attempt intervals
+averaged 26.011 seconds, including prior operations; their next scheduled waits
+averaged only 3.223 seconds. This distinguishes timer policy from operation delay.
+Seven exporter observations timed out at five seconds, proxy recovery listen-drop
+delta was 379,264, and listener occupancy reached 4097/4096. Presence work p95
+reached 4.95 seconds and Redis round-trip p95 4.40 seconds.
+
+The first cohort's concentration, accept pressure and explicit presence overload
+support testing one bounded adjustment: spread the first socket reconnect over
+0.8–20 seconds instead of 0.8–1 second. Preserve repeated exponential backoff,
+startup creation/retry behavior, one tagged timer, authentication and leases, and
+all capacity limits. This increases a single client's first retry wait ceiling;
+it is intended to reduce aggregate recovery pressure, not speed every first retry.
+Only the client policy image changes in the paired trial; backend/proxy images
+and resource allocations remain fixed. This unavoidable image difference is the
+tested behavior change, not a claim of byte-identical client images.
+
+All **241,438 admissions = confirmations = receiver inbox identities** reconciled
+across complete 80k scans. Outbox, inflight, pending rows, unavailable and unscanned
+counts were zero. Dedicated cleanup verified empty application tables and removed
+temporary deployment resources. The trial's acceptance criteria were recorded
+before execution in `observability/BASELINE.md`.
+
+### Task 10 rejected first-reconnect spread
+
+`/tmp/chatchat-task10-spread-20261011/` changed only the client policy image,
+with every resource limit and all TCP/proxy/storage/monitoring images verified
+equal to the instrumented control. The connection hold passed, but traffic hit
+its safety stop after a transient socket count below 99.9% of 80k. Client counters
+recorded 333 peer closes; later TCP counters attributed 333 closures to presence
+unavailability. Their underlying trigger was not isolated. This phase is not an
+accepted stable 120-second traffic result, even though its measured throughput
+was 796.2/s and p95 ≤50 ms. Longer first waits delay recovery from incidental
+closures; no claim is made that the changed timer caused lease failure.
+
+The subsequent pause/recovery comparison also failed its 120-second target:
+continuous exact socket recovery took 140.0 seconds, with 26,741 failed attempts
+versus 21,966 in the control. First waits averaged 10.597 seconds, but network
+operations still spent seconds under pressure. Seven exporter samples timed out;
+the proxy recovery listen-drop delta was 355,615. Lower listen drops alone do not
+establish improvement when recovery and failures worsened. All **227,722 identities**
+reconciled in complete 80k scans, with no final pending/unavailable/unscanned work.
+Dedicated cleanup was verified empty and temporary resources removed.
+
+The timer-spread change was reverted. The next bounded trial reuses each
+simulator's configured startup concurrency to limit active socket reconnect
+handshakes, with no queued operations or central coordinator. Fixed user-selected
+ETS slots retain exact PID ownership; normal/exceptional completion releases them,
+and the next contender reclaims a killed holder. Capacity deferral uses the existing
+tagged exponential backoff and preserves identities, rather than starting another
+connect/authentication operation. The test baseline has 20 slots per shard. This
+directly bounds the concurrency that timer jitter alone left unbounded.
+
+### Task 10 rejected fixed-slot/exponential admission deferral
+
+`/tmp/chatchat-task10-admission-20261011/` retained all non-client images and
+resource limits. Setup completed within 240 seconds, followed by a passing 80k
+connection hold. Traffic measured 789.2 confirmations/s, mean 11.8 ms and p95
+upper bucket 100 ms, missing the declared 50-ms trial criterion. Reconnect slots
+were inactive throughout that traffic phase; the observed latency difference is
+not attributed to admission without further evidence.
+
+During recovery the limit reduced kernel pressure: proxy namespace listen-drop
+delta and sampled accept occupancy were zero. Two exporter samples still timed
+out, so no uninterrupted health-visibility claim is made. Completed connects
+averaged 4.85 ms and authentication 69.12 ms (p95 upper buckets 50/500 ms), with
+zero observed failed network attempts. However, 167,411 local capacity deferrals
+inherited exponential waits as long as 30 seconds and contenders could not borrow
+other slots. Recovery missed the 120-second target and did not reach continuous
+exact 80k observations before the 300-second recovery/drain boundary.
+
+The final non-atomic scans covered all 80k clients but found 10 disconnected,
+15 outbox identities and 11 PostgreSQL pending rows. Receiver inboxes contained
+262,360 identities; the final sampled sender counters were 262,388 admissions
+and 262,363 confirmations. Observations were sequential and changed during scans;
+these values cannot establish full identity reconciliation or unique-message loss.
+The failed run's residual-work evidence was saved before stopping writers and
+the dedicated cleanup. Application counts were then verified empty and temporary
+resources removed. This is an unmet drain acceptance criterion, not a validated
+production recovery result.
+
+The revised trial keeps the same concurrency bound, borrows free slots with at
+most the configured number of atomic reservation probes, and treats local admission
+contention separately from a network failure. Local deferrals retry after 1.6–2
+seconds without escalating the network failure counter; actual network failures
+retain their existing exponential backoff. Regression coverage preserves owner
+release, killed-owner recovery, identity retention, one timer and prior network
+failure backoff. Forty-six client tests and the additional focused assertions pass.
+
+### Task 10 completed: pooled admission and separate local retry
+
+`/tmp/chatchat-task10-pooled-admission-20261011/` contains the final controlled
+comparison, source hashes, image/resource metadata, raw samples, complete scans,
+cleanup evidence and `task9-10-analysis.json`. Every resource setting and every
+non-client image matched the instrumented control. Only the client policy image
+changed intentionally. Population, traffic, proxy threads and pause duration
+stayed at 80k, 0.01, two and 30 seconds.
+
+Simulator reconnects reuse `creation_concurrency` as their local handshake bound
+(20 per shard here). A fixed-size ETS pool reserves before work; contenders probe
+at most that many slots and borrow free capacity. Exact-owner deletion releases
+on normal completion or exception, and dead PIDs are reclaimed without a
+coordinator or pending-operation queue. Capacity deferral retries with existing
+1.6–2-second jitter, without incrementing/resetting network failure backoff. Real
+network failures retain exponential retry. One tagged timer, socket ownership,
+conservative server leases and stable message stores are preserved.
+
+| Measurement | Instrumented control | Final pooled admission |
+| --- | ---: | ---: |
+| Stable confirmations/s | 797.8 | 803.9 |
+| Stable mean / p95 upper bucket | 5.8 / 50 ms | 5.4 / 50 ms |
+| Continuous exact socket recovery, sampled | 120.05 s | 100.05 s |
+| Recorded failed network attempts | 21,966 | 0 |
+| Recovery proxy namespace listen-drop delta | 379,264 | 0 |
+| Sampled proxy TCP accept occupancy peak | 4097 | 7 |
+| Failed HAProxy exporter observations | 7 | 1 |
+
+The final trial met the declared 120-second recovery target, ≥760/s throughput,
+≤50-ms steady-state p95 and complete drain requirements. Admission recorded
+327,913 deferrals; these are neither queued socket operations nor failed network
+attempts. All 40,000 disconnected clients completed one successful network attempt.
+Connect averaged 8.49 ms and authentication 75.30 ms (p95 upper buckets 50/500 ms),
+versus seconds in the control. First waits averaged 901 ms; repeated admission
+waits 1.808 seconds. Sampled active holders reached 20 per shard and never exceeded
+that bound. No existing backend limits or timeout budgets increased.
+
+The paused backend was observed DOWN by 20 seconds after pause and both UP by
+20 seconds after resume, with one missing health sample at ten seconds. The
+remaining scrape gap is explicit; no exact restoration SLA is claimed. Kernel
+counters are namespace-wide and accept occupancy is sampled; zero recorded deltas
+do not establish absence of all unsampled pressure. Presence work and Redis
+round-trip p95 still peaked at 9.07 and 4.78 seconds during recovery. The change
+reduces reconnect amplification without proving unlimited dependency capacity.
+Largest sampled TCP memory was 5.90 GiB of 8 GiB; generator memory stayed below
+3.07 GiB of 4 GiB. All sampled OOM-kill counters were zero.
+
+Complete scans covered all **80,000 clients**, all connected and available.
+**263,619 admissions = sender confirmations = unique receiver inbox identities**.
+Outbox, inflight, PostgreSQL pending, unavailable and unscanned counts were zero.
+Outage confirmation p95 exceeded the ten-second histogram ceiling; fast steady
+traffic does not imply fast fault-time confirmation. Evidence preceded cleanup,
+which verified `0|0|0` and removed dedicated containers/volumes.
+
+Verification: **153 umbrella tests**, format, high-priority Credo,
+warnings-as-errors compilation, 15 capture and four baseline Python tests passed.
+The umbrella suite used freshly migrated disposable PostgreSQL and isolated
+Redis DB 15; test services were removed afterward. Changes remain local.
+
+This is one paired outcome at the declared resources, not statistical confidence,
+a production SLA or a new throughput ceiling. Tasks 11–12 retain longer-soak,
+intermediate throughput and storage/process/multi-node failure scope. Standalone
+clients do not acquire a simulator-wide limit; client-process death still loses
+in-memory stores. Failed experiments above remain explicit.

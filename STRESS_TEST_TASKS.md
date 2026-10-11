@@ -1,16 +1,16 @@
 # Stress-test bottleneck tasks
 
 Evidence: [STRESS_TEST_FINDINGS.md](STRESS_TEST_FINDINGS.md).
-Task numbers are stable references, not execution order. **Tasks 1–8 are complete
-at the tested scope.** Keep HAProxy. The final corrected build sustained 80,000
-authenticated sockets and 797.1 sender confirmations/s, with steady-state p95
-≤50 ms. After a 30-second single-backend pause, all 240,695 admitted identities
+Task numbers are stable references, not execution order. **Tasks 1–10 are complete
+at the tested scope.** Keep HAProxy. The task 10 build sustained 80,000
+authenticated sockets and 803.9 sender confirmations/s, with steady-state p95
+≤50 ms. After a 30-second single-backend pause, all 263,619 admitted identities
 reconciled with confirmations and receiver inboxes; pending work was zero.
-Continuous 80k socket observations returned about 190.5 seconds after resume.
+Continuous 80k socket observations returned about 100.05 seconds after resume.
 
 This establishes a tested operating point, not a capacity ceiling or recovery SLA.
 Higher throughput, longer soak duration, and storage/multi-node failures remain
-unvalidated. Next priorities are **9 → 10 → 11 → 12**; task 9 supports reliable
+unvalidated. Next priorities are **11 → 12**; task 9 supports reliable
 measurement for the other follow-ups. These are planning tasks, not authorization
 to launch new load runs or failure injection. Use separately authorized isolated
 deployments; never reset shared data.
@@ -369,39 +369,73 @@ but recovery approaches lane capacity. Higher throughput remains task 11.
 Depends on task 5. Owners: existing HAProxy capture/exporter workflow in
 `observability/` and affected dashboards.
 
-- [ ] Identify why 11 final-run exporter samples failed; distinguish scrape timeout,
+- [x] Identify why 11 final-run exporter samples failed; distinguish scrape timeout,
   exporter/proxy availability and missing capture data using bounded observations.
-- [ ] Capture backend UP/DOWN/MAINT transitions and check duration alongside accept
+- [x] Capture backend UP/DOWN/MAINT transitions and check duration alongside accept
   queues and kernel deltas during an isolated repeat. Retain timestamps and explicit
   unavailable samples; never interpret absence as healthy or down.
-- [ ] Improve the existing capture path where measured failures justify it. Keep
+- [x] Improve the existing capture path where measured failures justify it. Keep
   probes bounded and avoid adding a health endpoint without demonstrated need.
 
 Done when the report can measure outage detection/restoration during reconnect
 pressure, or explicitly bound the remaining observation gap. No exact transition
 SLA is claimed from sparse samples.
 
+Historical evidence reviewed: all 11 gaps had successful capture queries with
+HAProxy `up=0`, identifying failed exporter scrapes rather than capture failure.
+The saved run lacks scrape errors, so timeout versus exporter availability remains
+unresolved. Capture now saves bounded scrape duration/source timestamps and
+sanitized target failure categories. Fifteen capture and four baseline tests pass.
+The subsequently authorized isolated repeat completed task 9: seven recovery
+observations recorded five-second HAProxy scrape timeouts, with successful target
+API capture. DOWN was observed by 20 seconds after pause; the first restored UP
+observation was 50 seconds after resume, following missing samples. Exact restoration
+time remains bounded by the observation gap, not a demonstrated transition SLA.
+All 238,234 identities reconciled across admissions, confirmations and receiver
+inboxes; final pending work was zero. Dedicated data cleanup was verified empty
+and temporary resources removed. Task 10 proceeds with rebuilt-client timing
+instrumentation and an initial 120-second socket-recovery target.
+
 ## 10. Reduce reconnect pressure and recovery time — priority P1
 
 Depends on task 9. Owners: existing client retry/startup flow, TCP
 presence/admission, and HAProxy configuration where measurements justify changes.
 
-- [ ] Attribute the approximately 191-second recovery tail to attempt scheduling,
+- [x] Attribute the approximately 191-second recovery tail to attempt scheduling,
   connect/authentication, accept queues, presence operations and lease replacement.
   Measure first/repeated attempt distributions and operation latency, not just
   configured retry delays or aggregate socket counts.
-- [ ] Record the recovery target before judging a change. Compare a bounded ramp,
+- [x] Record the recovery target before judging a change. Compare a bounded ramp,
   retry or admission adjustment only where attribution supports it, with identical
   images/resources, 80k population, traffic and pause duration.
-- [ ] Preserve one attempt per client, bounded queues, authenticated ownership,
+- [x] Preserve one attempt per client, bounded queues, authenticated ownership,
   conservative leases and retained message identities. Do not raise FD, port,
   backlog, worker or pool limits without measured exhaustion/downstream headroom.
-- [ ] Reconcile all admissions, confirmations and inbox identities after drain;
+- [x] Reconcile all admissions, confirmations and inbox identities after drain;
   report recovery time, latency tail, listen-drop deltas and observation gaps.
 
 Done when a repeatable comparison meets the recorded recovery target and reduces
 measured pressure without weakening delivery invariants. The current result is
 successful eventual recovery, not an established recovery SLA.
+
+Completed at the declared scope: first-wait widening and exponential local
+admission deferral failed and were replaced. Simulator reconnects now share the
+existing creation-concurrency limit through a bounded local ETS slot pool,
+borrow idle slots, and retry capacity deferral after 1.6–2 seconds without changing
+network failure backoff. No waiting socket operations or coordinator mailbox are
+introduced; exception/killed-owner recovery and identity retention are covered.
+
+The paired 80k/0.01/30-second pause comparison retained every resource limit and
+all non-client images. Stable traffic measured 803.9 confirmations/s, mean 5.4 ms,
+p95 ≤50 ms. Continuous exact 80k sockets returned at 100.05 seconds, meeting the
+120-second experimental target versus 120.05 seconds in the instrumented control.
+Recorded network failures fell from 21,966 to zero, recovery proxy namespace
+listen-drop delta from 379,264 to zero, and exporter failure observations from
+seven to one. **263,619 admissions = confirmations = receiver inbox identities**
+reconciled across all 80k clients, with zero final pending/unavailable/unscanned
+work. Dedicated data cleanup and resource removal passed. One paired run does
+not establish statistical confidence or a production SLA; outage confirmation
+p95 still exceeds ten seconds. Task 11 owns longer duration and throughput scope.
 
 ## 11. Locate sustainable throughput and validate duration — priority P1
 

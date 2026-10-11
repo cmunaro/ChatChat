@@ -1,5 +1,5 @@
 defmodule ChatchatClient.Socket do
-  def connect(token) do
+  def connect(token, observer \\ nil) do
     options = [
       :binary,
       active: false,
@@ -9,9 +9,18 @@ defmodule ChatchatClient.Socket do
       send_timeout_close: true
     ]
 
-    case :gen_tcp.connect(host(), port(), options, timeout()) do
-      {:ok, socket} -> authenticate(socket, token)
-      {:error, reason} -> {:error, {:connect, reason}}
+    started = System.monotonic_time(:millisecond)
+    result = :gen_tcp.connect(host(), port(), options, timeout())
+    record_timing(observer, :connect, started, result)
+
+    case result do
+      {:ok, socket} ->
+        authenticate(socket, token, observer)
+
+      {:error, reason} ->
+        failure = if reason == :timeout, do: :connect_timeout, else: :connect_other
+        record_failure(observer, failure)
+        {:error, {:connect, reason}}
     end
   end
 
@@ -52,7 +61,9 @@ defmodule ChatchatClient.Socket do
   def close(nil), do: :ok
   def close(socket), do: :gen_tcp.close(socket)
 
-  defp authenticate(socket, token) do
+  defp authenticate(socket, token, observer) do
+    started = System.monotonic_time(:millisecond)
+
     result =
       with :ok <- send_frame(socket, %{type: "authenticate", token: token}),
            {:ok, line} <- :gen_tcp.recv(socket, 0, timeout()),
@@ -64,8 +75,56 @@ defmodule ChatchatClient.Socket do
         response -> {:error, {:authenticate, response}}
       end
 
+    record_timing(observer, :authenticate, started, result)
+
+    case result do
+      {:error, {:authenticate, reason}} ->
+        failure =
+          case reason do
+            :timeout ->
+              :authenticate_timeout
+
+            {:ok, %{"type" => "error", "error" => "already_connected"}} ->
+              :already_connected
+
+            {:ok, %{"type" => "error", "error" => "presence_unavailable"}} ->
+              :presence_unavailable
+
+            _ ->
+              :authenticate_other
+          end
+
+        record_failure(observer, failure)
+
+      _ ->
+        :ok
+    end
+
     if match?({:error, _}, result), do: close(socket)
     result
+  end
+
+  defp record_failure(observer, reason),
+    do:
+      ChatchatClient.ConnectionDiagnostics.emit(
+        %{result_observer: observer},
+        {:socket_failed, reason}
+      )
+
+  defp record_timing(observer, stage, started, result) do
+    role =
+      case {stage, result} do
+        {:connect, {:ok, _}} -> :connect_ok
+        {:connect, _} -> :connect_failed
+        {:authenticate, {:ok, _, _}} -> :authenticate_ok
+        {:authenticate, _} -> :authenticate_failed
+      end
+
+    ChatchatClient.ConnectionDiagnostics.emit_timing(
+      observer,
+      role,
+      max(System.monotonic_time(:millisecond) - started, 0)
+    )
   end
 
   defp receive_response(socket, matcher, state, deadline) do

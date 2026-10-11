@@ -11,15 +11,47 @@ defmodule ChatchatClient.ConnectionDiagnostics do
     :shutdown
   ]
   @failure_stages [:token, :connect_authenticate, :activate]
+  @socket_failures [
+    :connect_timeout,
+    :connect_other,
+    :authenticate_timeout,
+    :already_connected,
+    :presence_unavailable,
+    :authenticate_other
+  ]
   @events Enum.map(@disconnect_reasons, &{:disconnect, &1}) ++
-            [:reconnect_attempt, :reconnect_ok] ++
-            Enum.map(@failure_stages, &{:reconnect_failed, &1})
+            [:reconnect_attempt, :reconnect_ok, :reconnect_deferred] ++
+            Enum.map(@failure_stages, &{:reconnect_failed, &1}) ++
+            Enum.map(@socket_failures, &{:socket_failed, &1})
   @indices @events |> Enum.with_index(1) |> Map.new()
 
   @interval_roles [:reconnect, :startup]
-  @interval_bounds [1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 60_000]
-  @interval_fields 9
-  def new, do: :atomics.new(length(@events) + 2 * @interval_fields, signed: false)
+  @interval_bounds [10, 50, 100, 500, 1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 60_000]
+  @interval_fields length(@interval_bounds) + 2
+  @timing_roles [
+    :first_reconnect_wait,
+    :repeated_reconnect_wait,
+    :reconnect_schedule_lag,
+    :connect_ok,
+    :connect_failed,
+    :authenticate_ok,
+    :authenticate_failed
+  ]
+  @histogram_roles @interval_roles ++ @timing_roles
+  def new,
+    do: :atomics.new(length(@events) + length(@histogram_roles) * @interval_fields, signed: false)
+
+  def emit_timing(observer, role, duration) when role in @timing_roles do
+    :telemetry.execute([:chatchat, :client, :connection_timing], %{duration: duration}, %{
+      stage: role
+    })
+
+    if observer, do: send(observer, {:connection_timing, role, duration})
+    :ok
+  end
+
+  def record_timing(counts, role, duration) when role in @timing_roles,
+    do: record_histogram(counts, role, duration)
 
   def emit_interval(state, role, interval) when role in @interval_roles do
     :telemetry.execute([:chatchat, :client, :retry_interval], %{interval: interval, count: 1}, %{
@@ -33,7 +65,10 @@ defmodule ChatchatClient.ConnectionDiagnostics do
   end
 
   def record_interval(counts, role, interval)
-      when role in @interval_roles and is_integer(interval) and interval >= 0 do
+      when role in @interval_roles,
+      do: record_histogram(counts, role, interval)
+
+  defp record_histogram(counts, role, interval) when is_integer(interval) and interval >= 0 do
     offset = interval_offset(role)
     :atomics.add(counts, offset + 1, 1)
     :atomics.add(counts, offset + 2, interval)
@@ -46,13 +81,14 @@ defmodule ChatchatClient.ConnectionDiagnostics do
   end
 
   defp interval_offset(role),
-    do: length(@events) + Enum.find_index(@interval_roles, &(&1 == role)) * @interval_fields
+    do: length(@events) + Enum.find_index(@histogram_roles, &(&1 == role)) * @interval_fields
 
   def emit(state, event) when event in @events do
     metadata =
       case event do
         {:disconnect, reason} -> %{event: :disconnect, reason: reason}
         {:reconnect_failed, stage} -> %{event: :reconnect_failed, stage: stage}
+        {:socket_failed, reason} -> %{event: :socket_failed, reason: reason}
         event -> %{event: event}
       end
 
@@ -79,22 +115,28 @@ defmodule ChatchatClient.ConnectionDiagnostics do
         ok: get(counts, :reconnect_ok),
         failed: failures |> Map.values() |> Enum.sum()
       },
-      retry_intervals_ms:
-        Map.new(@interval_roles, fn role ->
-          offset = interval_offset(role)
-
-          {role,
-           %{
-             count: :atomics.get(counts, offset + 1),
-             sum: :atomics.get(counts, offset + 2),
-             buckets:
-               Map.new(Enum.with_index(@interval_bounds, offset + 3), fn {bound, index} ->
-                 {bound, :atomics.get(counts, index)}
-               end)
-           }}
-        end),
+      retry_intervals_ms: histograms(counts, @interval_roles),
+      timings_ms: histograms(counts, @timing_roles),
+      reconnect_deferred: get(counts, :reconnect_deferred),
+      socket_failures: Map.new(@socket_failures, &{&1, get(counts, {:socket_failed, &1})}),
       reconnect_failures: failures
     }
+  end
+
+  defp histograms(counts, roles) do
+    Map.new(roles, fn role ->
+      offset = interval_offset(role)
+
+      {role,
+       %{
+         count: :atomics.get(counts, offset + 1),
+         sum: :atomics.get(counts, offset + 2),
+         buckets:
+           Map.new(Enum.with_index(@interval_bounds, offset + 3), fn {bound, index} ->
+             {bound, :atomics.get(counts, index)}
+           end)
+       }}
+    end)
   end
 
   defp get(counts, event), do: :atomics.get(counts, Map.fetch!(@indices, event))

@@ -77,6 +77,11 @@ defmodule ChatchatClient.SimulatedClient do
     {:noreply, state}
   end
 
+  def handle_info({:connection_timing, role, duration}, state) do
+    ChatchatClient.ConnectionDiagnostics.record_timing(state.connection_counts, role, duration)
+    {:noreply, state}
+  end
+
   def handle_info({:delivery_attempt, retry?}, state) when is_boolean(retry?) do
     :atomics.add(state.result_counts, 14, 1)
     if retry?, do: :atomics.add(state.result_counts, 15, 1)
@@ -150,13 +155,13 @@ defmodule ChatchatClient.SimulatedClient do
   end
 
   defp do_start_client(state) do
+    options = [result_observer: self(), reconnect_admission: Map.get(state, :reconnect_admission)]
+
     client =
       if state.user_id do
-        ChatchatClient.run_preprovisioned(state.username, state.user_id, result_observer: self())
+        ChatchatClient.run_preprovisioned(state.username, state.user_id, options)
       else
-        ChatchatClient.run(state.username,
-          result_observer: self()
-        )
+        ChatchatClient.run(state.username, options)
       end
 
     register_client(state, client)

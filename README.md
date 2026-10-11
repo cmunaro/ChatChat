@@ -249,6 +249,16 @@ recreates it after process death. Socket reconnect retains outbox identities and
 inbox deduplication; process death still clears in-memory stores. Status includes
 bounded aggregate histograms of actual retry intervals for both owners.
 
+Simulator socket reconnects also share a local handshake limit equal to
+`creation_concurrency` (20 per shard in the controlled baseline). A bounded ETS
+slot pool admits work before connect/authentication, borrows unused slots, and
+reclaims killed owners. Busy clients retain one timer and retry admission after
+1.6–2 seconds; actual network failures retain exponential backoff. Status reports
+`reconnect_admission`, `connection_diagnostics.reconnect_deferred`, operation timing
+histograms and fixed socket-failure categories. Standalone clients keep independent
+retries. The validated 80k pause comparison recovered sockets in approximately
+100 seconds, with complete reconciliation; this is a tested point, not a recovery SLA.
+
 A transient server `presence_unavailable` response reconnects with pending
 messages eligible for retry. Malformed protocol responses still suspend retries
 until explicit resume; successful authentication does not clear that safety hold.

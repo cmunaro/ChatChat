@@ -14,6 +14,30 @@ import capture_diagnostics as capture
 
 
 class CaptureTests(unittest.TestCase):
+    def test_target_scrape_failures_are_classified_without_raw_errors(self):
+        targets = [{"labels": {"job": "haproxy"}, "health": "down",
+                    "lastScrape": "2026-10-11T11:57:26Z", "lastScrapeDuration": 5,
+                    "lastError": "Get http://private-host/metrics: context deadline exceeded"},
+                   {"labels": {"job": "unrelated"}, "lastError": "private detail"}]
+        response = {"status": "success", "data": {"activeTargets": targets}}
+        with patch.object(capture.urllib.request, "urlopen", return_value=BytesIO(json.dumps(response).encode())):
+            result = capture.prometheus_targets_probe("http://localhost")
+        self.assertEqual(result["data"], [{"job": "haproxy", "health": "down",
+                         "last_scrape": "2026-10-11T11:57:26Z", "scrape_seconds": 5,
+                         "failure_reason": "timeout"}])
+        self.assertNotIn("private", json.dumps(result))
+        report = capture.summary([{"timestamp": "2026-10-11T11:57:26Z",
+                                   "probes": {"prometheus:targets": result}}])
+        self.assertIn('"failure_reason": "timeout"', report)
+        self.assertIn("exporter scrapes", report)
+
+    def test_target_capture_bounds_and_unavailable_responses(self):
+        for raw, status in [(b"x" * (capture.MAX_BYTES + 1), "truncated"),
+                            (b'{}', "unavailable"),
+                            (b'{"status":"success","data":{"activeTargets":[]}}', "no_data")]:
+            with patch.object(capture.urllib.request, "urlopen", return_value=BytesIO(raw)):
+                self.assertEqual(capture.prometheus_targets_probe("http://localhost")["status"], status)
+
     def test_command_timeout_and_missing_container_do_not_leak_error_text(self):
         with patch.object(capture.subprocess, "run", side_effect=subprocess.TimeoutExpired("docker", 3)):
             self.assertEqual(capture.command_probe(["docker"]), {"status": "timeout"})

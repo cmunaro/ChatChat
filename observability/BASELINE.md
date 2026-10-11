@@ -136,7 +136,57 @@ container and can remove it through Docker DNS before health failure hysteresis
 runs. Capture includes all active proxy states, including maintenance. Failed
 exporter observations remain unavailable.
 
+Capture includes exporter scrape duration and source scrape timestamps, plus
+current target health, last-scrape time and sanitized failure categories. The
+target API observation has its own probe timestamps and can follow the sample's
+PromQL evaluation time. Use these to distinguish capture failures from failed
+exporter scrapes; `up=0` does not establish backend DOWN. Raw target errors and
+URLs are discarded, and missing target evidence remains explicitly unavailable.
+
 A server `presence_unavailable` error is transient: the client closes/reconnects
 with its existing outbox eligible for retry. Malformed or other uncorrelated
 protocol errors retain the existing explicit suspension policy; reconnect does
 not clear a prior safety hold.
+
+Task 10's initial comparison target is continuous fresh observations of 80,000
+authenticated sockets within 120 seconds after a 30-second backend pause, followed
+by complete reconciliation within the existing 120-second drain. This is an
+experimental acceptance target, not a production SLA. Keep the existing resource
+allocation, 0.01 traffic probability and two proxy threads as the comparison anchor.
+For the first reconnect-spread trial, require steady-state p95 ≤50 ms and at least
+760 confirmations/s, lower recovery retry failures and proxy namespace listen-drop
+deltas than the instrumented control, no unexplained missing identities and zero
+final pending work. Retain the 240-second setup deadline and existing bounded
+recovery/drain phases. Only the client policy image changes intentionally; preserve
+all backend/proxy images and resource limits. A single paired run establishes a
+tested outcome, not statistical confidence across deployments.
+The 20-second first-reconnect spread failed acceptance and was reverted. The next
+trial retains the original retry delays and caps concurrent live-client reconnect
+handshakes at each simulator's existing `creation_concurrency` (20 per shard in
+this baseline). It uses a fixed-size local ETS slot set; contention defers to the
+existing tagged backoff timer rather than queuing a socket operation. Exact-owner
+release and lazy reclamation of killed owners preserve the bound without a new
+coordinator mailbox. `reconnect_deferred` counts local admission deferrals separately
+from network attempts/failures; `reconnect_admission` reports the configured limit
+and sampled active holders. The first fixed-slot/exponential-deferral version
+failed the recovery/drain target and was replaced with bounded free-slot borrowing
+and 1.6–2-second admission retries. Admission contention does not increment or
+reset network failure backoff; existing network failures keep their longer delay.
+The same target, gates, resources and reconciliation
+criteria apply. Standalone clients retain their existing independent retry policy.
+
+Rebuilt clients report bounded `connection_diagnostics.timings_ms` histograms for
+first and repeated reconnect timer waits, lateness beyond the scheduled timer,
+and successful/failed TCP connect and authentication durations. Socket failure
+counters separate connect/authentication timeout, existing ownership rejection,
+presence unavailability and other errors without retaining responses or tokens.
+The socket timing histograms cover reconnects observed by simulator wrappers;
+startup socket calls emit telemetry but do not enter these population histograms.
+Wait starts when the reconnect timer is scheduled, not when an outage begins.
+Connect/authenticate timing includes runtime scheduling and network/server work;
+it does not isolate server execution. Retry intervals include the previous attempt
+duration plus the next timer wait, so configured delay caps do not bound them.
+Histograms retain their count/sum and existing buckets, add 10/50/100/500-ms buckets,
+and have explicit overflow beyond 60 seconds. Hard client death cannot record a
+completed operation and still loses in-memory stores. New fields require rebuilt
+client images; do not treat missing fields as zero.

@@ -159,19 +159,45 @@ defmodule ChatchatClient.ConnectionDiagnosticsTest do
         end
       end)
 
-    assert {:noreply, failed} = ChatchatClient.handle_info(:reconnect, state())
+    scheduled = System.monotonic_time(:millisecond) - 1_000
+
+    initial =
+      Map.merge(state(), %{reconnect_scheduled_at: scheduled, reconnect_due_at: scheduled + 800})
+
+    assert {:noreply, failed} = ChatchatClient.handle_info(:reconnect, initial)
+    assert_receive {:connection_timing, :first_reconnect_wait, first_wait_ms}
+    assert_receive {:connection_timing, :reconnect_schedule_lag, first_lag_ms}
+    assert first_wait_ms >= 1_000
+    assert first_lag_ms >= 200
     assert_receive {:connection_diagnostic, :reconnect_attempt}
     assert_receive {:connection_diagnostic, {:reconnect_failed, :connect_authenticate}}
+    assert_receive {:connection_timing, :connect_ok, connect_ms}
+    assert_receive {:connection_timing, :authenticate_failed, auth_ms}
+    assert_receive {:connection_diagnostic, {:socket_failed, :authenticate_other}}
+    assert connect_ms >= 0 and auth_ms >= 0
     assert failed.socket == nil
     assert is_reference(failed.reconnect_timer)
     assert failed.reconnect_failures == 1
     Process.cancel_timer(failed.reconnect_timer)
 
-    assert {:noreply, recovered} =
-             ChatchatClient.handle_info(:reconnect, %{failed | reconnect_timer: nil})
+    now = System.monotonic_time(:millisecond)
+
+    delayed = %{
+      failed
+      | reconnect_timer: nil,
+        reconnect_scheduled_at: now - 2_000,
+        reconnect_due_at: now - 500
+    }
+
+    assert {:noreply, recovered} = ChatchatClient.handle_info(:reconnect, delayed)
 
     assert_receive {:connection_diagnostic, :reconnect_attempt}
     assert_receive {:connection_diagnostic, :reconnect_ok}
+    assert_receive {:connection_timing, :repeated_reconnect_wait, wait_ms}
+    assert_receive {:connection_timing, :reconnect_schedule_lag, lag_ms}
+    assert_receive {:connection_timing, :authenticate_ok, recovered_auth_ms}
+    assert wait_ms >= 2_000 and lag_ms >= 500 and recovered_auth_ms >= 0
+    assert recovered.reconnect_scheduled_at == nil
     assert recovered.socket != nil
     assert recovered.reconnect_failures == 0
     assert recovered.reconnect_generation == nil
@@ -212,6 +238,51 @@ defmodule ChatchatClient.ConnectionDiagnosticsTest do
 
     Process.cancel_timer(final.reconnect_timer)
     Task.await(backend)
+  end
+
+  test "socket diagnostics distinguish lease replacement from unavailable presence", %{
+    listener: listener
+  } do
+    backend =
+      Task.async(fn ->
+        for reason <- ["already_connected", "presence_unavailable"] do
+          {:ok, socket} = :gen_tcp.accept(listener)
+          assert {:ok, _} = :gen_tcp.recv(socket, 0, 1_000)
+          :ok = :gen_tcp.send(socket, Jason.encode!(%{type: "error", error: reason}) <> "\n")
+          :gen_tcp.close(socket)
+        end
+      end)
+
+    for reason <- [:already_connected, :presence_unavailable] do
+      assert {:error, {:authenticate, _}} = ChatchatClient.Socket.connect("unused", self())
+      assert_receive {:connection_diagnostic, {:socket_failed, ^reason}}
+      assert_receive {:connection_timing, :authenticate_failed, duration}
+      assert duration >= 0
+    end
+
+    Task.await(backend)
+  end
+
+  test "full reconnect admission defers one timer without attempting a socket or losing identity" do
+    admission = ChatchatClient.ConnectionAdmission.new(1)
+    :ets.insert(admission.table, {0, self()})
+    {:ok, id, store} = Store.put_outbox(Store.new(1), 2, "retained")
+    initial = Map.merge(state(), %{store: store, reconnect_admission: admission})
+    assert {:noreply, deferred} = ChatchatClient.handle_info(:reconnect, initial)
+    assert_receive {:connection_diagnostic, :reconnect_deferred}
+    refute_receive {:connection_diagnostic, :reconnect_attempt}
+    assert Map.get(deferred, :reconnect_failures, 0) == 0
+    assert deferred.reconnect_waits == 1
+    assert is_reference(deferred.reconnect_timer)
+    assert Process.read_timer(deferred.reconnect_timer) in 1_500..2_000
+    assert [[^id, 2, "retained", nil]] = Store.outbox(deferred.store)
+    assert {:noreply, ^deferred} = ChatchatClient.handle_cast(:disconnect, deferred)
+    Process.cancel_timer(deferred.reconnect_timer)
+    exhausted = Map.put(initial, :reconnect_failures, 5)
+    assert {:noreply, deferred_after_failure} = ChatchatClient.handle_info(:reconnect, exhausted)
+    assert deferred_after_failure.reconnect_failures == 5
+    assert Process.read_timer(deferred_after_failure.reconnect_timer) in 23_900..30_000
+    Process.cancel_timer(deferred_after_failure.reconnect_timer)
   end
 
   test "wrapper startup retries reset on authentication and never compete with a live client", %{

@@ -1,7 +1,7 @@
 defmodule ChatchatClient do
   use GenServer
 
-  alias ChatchatClient.{Api, ConnectionDiagnostics, Socket, Store}
+  alias ChatchatClient.{Api, ConnectionAdmission, ConnectionDiagnostics, Socket, Store}
 
   @ping_interval 30_000
 
@@ -13,6 +13,7 @@ defmodule ChatchatClient do
          {:ok, pid} <-
            start_connected(%{
              result_observer: Keyword.get(options, :result_observer),
+             reconnect_admission: Keyword.get(options, :reconnect_admission),
              username: username,
              user_id: user_id,
              token: token,
@@ -33,6 +34,7 @@ defmodule ChatchatClient do
          {:ok, pid} <-
            start_connected(%{
              result_observer: Keyword.get(options, :result_observer),
+             reconnect_admission: Keyword.get(options, :reconnect_admission),
              username: username,
              user_id: user_id,
              token: token,
@@ -270,27 +272,65 @@ defmodule ChatchatClient do
     cancel_timer(state.reconnect_timer)
     started = System.monotonic_time(:millisecond)
 
-    if previous = Map.get(state, :last_reconnect_attempt),
-      do: ConnectionDiagnostics.emit_interval(state, :reconnect, started - previous)
+    if scheduled = Map.get(state, :reconnect_scheduled_at) do
+      role =
+        if Map.get(state, :reconnect_waits, 0) == 0,
+          do: :first_reconnect_wait,
+          else: :repeated_reconnect_wait
+
+      observer = Map.get(state, :result_observer)
+      ConnectionDiagnostics.emit_timing(observer, role, max(started - scheduled, 0))
+
+      ConnectionDiagnostics.emit_timing(
+        observer,
+        :reconnect_schedule_lag,
+        max(started - state.reconnect_due_at, 0)
+      )
+    end
 
     state =
       Map.merge(state, %{
         reconnect_timer: nil,
         reconnect_generation: nil,
-        last_reconnect_attempt: started
+        reconnect_scheduled_at: nil,
+        reconnect_due_at: nil,
+        reconnect_waits: Map.get(state, :reconnect_waits, 0) + 1
       })
+
+    case ConnectionAdmission.run(Map.get(state, :reconnect_admission), state.user_id, fn ->
+           perform_reconnect(state, started)
+         end) do
+      {:error, :capacity} ->
+        ConnectionDiagnostics.emit(state, :reconnect_deferred)
+        {:noreply, schedule_reconnect(state, max(Map.get(state, :reconnect_failures, 0), 1))}
+
+      result ->
+        result
+    end
+  end
+
+  def handle_info(:reconnect, state), do: {:noreply, %{state | reconnect_timer: nil}}
+
+  defp perform_reconnect(state, started) do
+    if previous = Map.get(state, :last_reconnect_attempt),
+      do: ConnectionDiagnostics.emit_interval(state, :reconnect, started - previous)
+
+    state = Map.put(state, :last_reconnect_attempt, started)
 
     ConnectionDiagnostics.emit(state, :reconnect_attempt)
 
     with {:ok, token} <- reconnect_step(state, :token, fn -> reconnect_token(state) end),
          {:ok, socket, _user_id} <-
-           reconnect_step(state, :connect_authenticate, fn -> Socket.connect(token) end),
+           reconnect_step(state, :connect_authenticate, fn ->
+             Socket.connect(token, Map.get(state, :result_observer))
+           end),
          :ok <- reconnect_step(state, :activate, fn -> activate_socket(socket) end) do
       state =
         Map.merge(state, %{
           token: token,
           socket: socket,
           reconnect_failures: 0,
+          reconnect_waits: 0,
           last_reconnect_attempt: nil
         })
 
@@ -302,8 +342,6 @@ defmodule ChatchatClient do
         {:noreply, schedule_reconnect(failed)}
     end
   end
-
-  def handle_info(:reconnect, state), do: {:noreply, %{state | reconnect_timer: nil}}
 
   defp reconnect_step(state, stage, operation) do
     try do
@@ -524,16 +562,25 @@ defmodule ChatchatClient do
   end
 
   defp schedule_reconnect(%{reconnect_timer: nil} = state) do
-    generation = make_ref()
-    delay = ChatchatClient.ReconnectBackoff.delay(Map.get(state, :reconnect_failures, 0))
-
-    Map.merge(state, %{
-      reconnect_timer: Process.send_after(self(), {:reconnect, generation}, delay),
-      reconnect_generation: generation
-    })
+    schedule_reconnect(state, Map.get(state, :reconnect_failures, 0))
   end
 
   defp schedule_reconnect(state), do: state
+
+  defp schedule_reconnect(state, failures) do
+    generation = make_ref()
+
+    delay = ChatchatClient.ReconnectBackoff.delay(failures)
+
+    scheduled = System.monotonic_time(:millisecond)
+
+    Map.merge(state, %{
+      reconnect_timer: Process.send_after(self(), {:reconnect, generation}, delay),
+      reconnect_generation: generation,
+      reconnect_scheduled_at: scheduled,
+      reconnect_due_at: scheduled + delay
+    })
+  end
 
   defp cancel_timer(nil), do: :ok
   defp cancel_timer(timer), do: Process.cancel_timer(timer)

@@ -40,6 +40,8 @@ QUERIES = {
     "proxy_errors": "rate(haproxy_backend_connection_errors_total{proxy=\"chatchat_tcp_nodes\"}[1m])",
     "proxy_aborts": "rate(haproxy_backend_server_aborts_total{proxy=\"chatchat_tcp_nodes\"}[1m])",
     "exporter_up": "up{job=~\"chatchat_tcp|haproxy\"}",
+    "exporter_scrape_seconds": "scrape_duration_seconds{job=~\"chatchat_tcp|haproxy\"}",
+    "exporter_scrape_timestamp": "timestamp(up{job=~\"chatchat_tcp|haproxy\"})",
 }
 
 # Fixed commands only: never inspect environment, read logs, or scan Redis keys.
@@ -158,7 +160,7 @@ case Process.whereis(ChatchatClient.LoadGenerator) do
     IO.puts(Jason.encode!(Map.take(status, [:phase, :ready_clients, :running_wrappers,
       :queued_messages, :confirmed_attempts, :message_attempts, :retry_attempts, :unique_confirmed_messages, :confirmation_latency_ms,
       :failed_attempts, :rejected_messages, :submission_failures,
-      :connection_diagnostics, :runtime, :retry_sample, :effective_options, :requested_clients, :startup_failures])))
+      :connection_diagnostics, :reconnect_admission, :runtime, :retry_sample, :effective_options, :requested_clients, :startup_failures])))
 end
 """
 
@@ -240,6 +242,39 @@ def client_probe(container):
     return result
 
 
+def prometheus_targets_probe(base_url):
+    """Record scrape failures without retaining arbitrary target error text or URLs."""
+    url = base_url.rstrip("/") + "/api/v1/targets?state=active"
+    try:
+        with urllib.request.urlopen(url, timeout=3) as response:
+            raw = response.read(MAX_BYTES + 1)
+        if len(raw) > MAX_BYTES:
+            return {"status": "truncated"}
+        payload = json.loads(raw)
+        if payload.get("status") != "success":
+            return {"status": "unavailable"}
+        targets = payload["data"]["activeTargets"]
+        if len(targets) > MAX_SERIES:
+            return {"status": "truncated"}
+        observations = []
+        for target in targets:
+            job = target.get("labels", {}).get("job")
+            if job not in ("haproxy", "chatchat_tcp"):
+                continue
+            error = target.get("lastError", "").lower()
+            reason = ("none" if not error else
+                      "timeout" if "timeout" in error or "deadline exceeded" in error else
+                      "connection_refused" if "connection refused" in error else
+                      "http_status" if "server returned http status" in error else "other")
+            observations.append({"job": job, "health": target.get("health"),
+                                 "last_scrape": target.get("lastScrape"),
+                                 "scrape_seconds": target.get("lastScrapeDuration"),
+                                 "failure_reason": reason})
+        return {"status": "ok" if observations else "no_data", "data": observations}
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return {"status": "unavailable"}
+
+
 def timed_probe(function, arguments):
     started = datetime.now(timezone.utc).isoformat()
     result = function(*arguments)
@@ -249,6 +284,7 @@ def timed_probe(function, arguments):
 def capture_sample(args, include_resources=True):
     timestamp = time.time()
     probes = {"prometheus:" + name: (prometheus_probe, (args.prometheus, query, timestamp)) for name, query in QUERIES.items()}
+    probes["prometheus:targets"] = (prometheus_targets_probe, (args.prometheus,))
     for container in args.tcp_container:
         probes["runtime:" + container] = (json_command_probe, (["docker", "exec", container, "/app/bin/chatchat_tcp", "rpc", TCP_RPC],))
     for container in args.loadgen_container:
@@ -333,6 +369,10 @@ def summary(samples):
                 key = name + ": " + probe["status"]
                 unavailable[key] = unavailable.get(key, 0) + 1
         for name, probe in probes.items():
+            if name == "prometheus:targets" and probe["status"] == "ok":
+                lines.append(f"- {sample['timestamp']} exporter scrapes "
+                             f"(observed {probe.get('started_at', 'unknown')}–{probe.get('finished_at', 'unknown')}): "
+                             + json.dumps(probe["data"], sort_keys=True))
             if name.startswith("client:") and probe["status"] in ("ok", "diagnostics_unavailable"):
                 data = probe["data"]
                 counters = {key: data.get(key) for key in ("phase", "ready_clients", "queued_messages", "confirmed_attempts", "failed_attempts", "connection_diagnostics")}
