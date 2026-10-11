@@ -1,143 +1,104 @@
 # Message delivery
 
-**At least once. No strict ordering. One active connection per user.**
+**At least once; no strict ordering; one active connection/user.**
 
 ## Flow
 
 ```mermaid
-flowchart TD
-    Send[Client saves to in-memory outbox] --> Route[Resolve receiver through Redis]
-    Route --> Direct[Try direct delivery across BEAM nodes]
-    Direct -->|Receiver saves + ACKs| OK[Sender receives ok]
-    Direct -->|Offline / unavailable / no ACK| Store[Commit pending row to PostgreSQL]
-    Store -->|Committed| OK
-    Store -->|Cannot confirm commit| Failed[Sender receives failed]
-    Store --> Inbox[Wake receiver inbox worker]
-    Inbox --> Receipt[Receiver saves + ACKs]
-    Receipt --> Delete[Delete pending row]
-    Failed --> Retry[Retry same message identity]
-    Retry --> Route
-```
-
-| Result | Meaning | Client action |
-| --- | --- | --- |
-| `ok` | Receiver ACK or PostgreSQL commit | Remove outbox entry |
-| `failed` | Capacity/unavailability; delivery may have happened | Retry |
-| No response | Unknown outcome | Retry after timeout |
-| `rejected` | Invalid request/receiver or identity conflict | Retain entry; stop retrying it |
-
-**`ok` does not mean read, offline delivery completed, or client disk durability.**
-Redis holds routes only. PostgreSQL holds pending messages, not conversation history.
-Undelivered rows do not expire.
-
-## Sender → receiver
-
-```mermaid
 sequenceDiagram
-    actor Sender as sender
-    participant TCP as tcp
-    participant Redis as redis
-    participant PG as postgres
-    actor Receiver as receiver
+    participant S as Sender
+    participant T as TCP nodes
+    participant R as Redis
+    participant P as PostgreSQL
+    participant D as Receiver
 
-    Note over TCP: Represents sender and receiver TCP nodes
-    Sender->>Sender: Save message in in-memory outbox
-    Sender->>TCP: Send message (stable message_id)
-    TCP->>TCP: Validate and admit bounded work
-    TCP->>Redis: Resolve receiver node and session
-    Redis-->>TCP: Route or unavailable
-
-    opt Receiver route available
-        TCP->>Receiver: Deliver message + receipt_id
-        Receiver->>Receiver: Record in memory / deduplicate
-        Receiver-->>TCP: ACK if received (identity + receipt_id)
+    S->>S: Save immutable message in outbox
+    S->>T: Send message_id + fresh request_id
+    T->>T: Validate identity and reserve capacity
+    T->>R: Resolve receiver route/session
+    R-->>T: Route or unavailable
+    opt Receiver reachable
+        T->>D: Deliver message + receipt_id
+        D->>D: Save / deduplicate
+        D-->>T: Authenticated receipt ACK
     end
-
-    alt Valid receiver ACK confirmed
-        TCP-->>Sender: ok (no PostgreSQL message write)
-        Sender->>Sender: Remove outbox entry
-    else Offline / unavailable / no ACK before deadline
-        TCP->>PG: Insert pending message idempotently
-        alt Commit confirmed
-            PG-->>TCP: Committed
-            TCP-->>Sender: ok
-            Sender->>Sender: Remove outbox entry
-            TCP->>Redis: Resolve current receiver route
-            Redis-->>TCP: Route or unavailable
-            TCP->>TCP: Wake inbox if routed, reconcile later
-            Note over TCP,Receiver: When receiver is connected
-            TCP->>PG: Read bounded pending inbox page
-            PG-->>TCP: Pending messages
-            TCP->>Receiver: Deliver message + fresh receipt_id
-            Receiver->>Receiver: Record in memory / deduplicate
-            Receiver-->>TCP: Authenticated receipt ACK
-            TCP->>PG: Delete by receiver + message identity
-        else Commit not confirmed and no valid receipt
-            TCP-->>Sender: failed
-            Sender->>Sender: Retry same identity with backoff
+    alt Matching receipt confirmed before deadline
+        T-->>S: ok
+        S->>S: Remove outbox entry
+    else Offline / unavailable / no receipt
+        T->>P: Idempotent pending insert
+        alt Commit confirmed before deadline
+            P-->>T: Committed
+            T-->>S: ok
+            S->>S: Remove outbox entry
+            T->>T: Wake inbox / reconcile later
+            opt Receiver connected now or later
+                T->>P: Read bounded pending page
+                P-->>T: Pending messages
+                T->>D: Deliver with fresh receipt_id
+                D->>D: Save / deduplicate
+                D-->>T: Authenticated receipt ACK
+                T->>P: Delete receiver-scoped pending row
+            end
+        else Commit unconfirmed / result deadline exceeded
+            T-->>S: failed
+            S->>T: Retry same message_id and content
+        else Invalid receiver / identity conflict
+            T-->>S: rejected
+            S->>S: Retain entry, stop retrying
         end
     end
 ```
 
+| Result | Meaning / client action |
+| --- | --- |
+| `ok` | Receiver ACK or PostgreSQL commit; remove outbox entry |
+| `failed` / no response | Delivery may have happened; retry the same identity |
+| `rejected` | Invalid input/receiver or identity conflict; retain entry, stop retrying |
+
+`ok` does not imply read, completed offline delivery or durable client storage.
+Redis stores presence/routes; PostgreSQL stores pending messages, not history.
+Pending rows do not expire.
+
 ## Identity & recovery
 
-| Rule | Behavior |
-| --- | --- |
-| Message identity | `(authenticated sender_id, client message_id)` |
-| Retry | Same receiver, payload, and message UUID; fresh request UUID |
-| Fallback insert | Same stored content is idempotent; changed content is rejected |
-| Receiver duplicate | Record once, ACK again; changed content never ACKs |
-| ACK authority | Exact identity, receipt, authenticated receiver, and session |
-| Lost inbox wakeup | Reconciliation revisits connected receivers about every 30s |
-| Unacknowledged row | Cursor wraps and retries; stuck rows do not block newer rows |
-| ACK/insert race | A committed extra copy remains eligible for inbox delivery |
-| Timestamp | Backend metadata; fallback retries preserve stored time; direct attempts use fresh time |
-
-Direct delivery makes no PostgreSQL message queries. It relies on the sender reusing immutable
-content and receiver deduplication; conflicts with pending rows are checked only on fallback.
+- Identity: `(authenticated sender_id, message_id)`. Retries retain receiver/payload
+  and use a fresh `request_id`; UUIDs are canonical lowercase.
+- Receivers save/deduplicate before ACK. Same content is ACKed again; conflicts are not.
+- ACKs must match sender/message, receipt, authenticated receiver and connection session.
+- Fallback rejects changed content for an existing pending identity; direct delivery
+  relies on immutable retries and receiver deduplication.
+- Lost wakeups are recovered by bounded reconciliation, targeting a ~30s scan cycle.
+  Inbox cursors wrap; unacknowledged messages remain retryable.
+- ACK/insert races and confirmed late commits can leave an extra pending copy;
+  inbox recovery delivers it again. Commit confirmation precedes Redis wakeup.
+- Expired writes never start; unconfirmed persistence stays retryable. Admission
+  permits remain held until queued frames are consumed/discarded or running work exits.
 
 ## Mock clients
 
-- Save outbox before send; save inbox/deduplication before ACK.
-- Retry indefinitely with 1–30s backoff plus jitter.
-- Reconnect preserves state; **process stop/crash clears everything**.
-- Inbox/deduplication grows in memory for the client's lifetime.
-- Uncorrelated protocol errors suspend sends until explicit `resume`.
+Stores survive socket reconnect, but **process stop/crash destroys inbox, outbox and
+deduplication**. Inbox memory grows for the process lifetime; wrappers replace dead
+clients with empty stores. Delivery retries use 1–30s base backoff plus up to 20%
+jitter. Transient `presence_unavailable` reconnects; uncorrelated protocol errors
+suspend sends until `ChatchatClient.resume/1`.
 
-| Inspect/control | API |
+Inspect with `ChatchatClient.outbox/1` and `ChatchatClient.inbox/1`.
+
+## Default bounds
+
+| Limit | Value |
 | --- | --- |
-| Pending/rejected sends | `ChatchatClient.outbox(client)` |
-| Received messages | `ChatchatClient.inbox(client)` |
-| Resume after fixing protocol error | `ChatchatClient.resume(client)` |
-
-## Protocol & limits
-
-Full wire reference: [`/admin/tcp-protocol`](http://localhost:4000/admin/tcp-protocol).
-Frames are newline-delimited UTF-8 JSON; authenticate first. UUIDs are canonical lowercase.
-Frame limits include JSON escaping and envelope fields. Sender identity comes from authentication.
-
-| Bound | Value |
-| --- | --- |
-| Encoded frame, excluding newline | 4,096 bytes |
+| Newline-delimited JSON frame, excluding newline | 4,096 bytes |
 | Authentication / idle / socket send timeout | 5s / 60s / 1s |
 | Direct window / transmissions | 2s / at most 2 |
-| Server result / client response timeout | 8s / 10s |
-| Database operation timeout | At most 5s |
+| Server result / client response / database budget | 8s / 10s / at most 5s |
 | Sender attempts per node / connection | 409 / 16 |
 | Receiver reservations per node / connection | 682 / 16 |
-| Sender / receiver / inbox byte budgets | 8 MiB each per node |
-| Database workers / inbox workers | 32 / 64 |
-| Inbox page | 16 rows |
-| Wake ingress / pending receivers / timers / cursors | 4,096 each |
-| Client outbox / inflight / read page | 128 / 16 / 128 |
+| Sender / receiver / inbox byte budget | 8 MiB each per node |
+| Database workers / maximum inbox workers / inbox page | 32 / 64 / 16 rows |
+| Wake ingress / pending receivers / retry timers / cursors | 4,096 each |
+| Client outbox / inflight attempts / read page | 128 / 16 / 128 |
 | Concurrent simulations | 16 |
 
-Admission reserves capacity **before payload enqueue**. Queued frames keep permits until
-consumed/discarded or the handler dies. Running writes keep reservations until exit;
-confirmed late commits still wake inbox recovery. Persistence uses one absolute deadline
-checked inside the worker and before each write/query; a busy database pool refuses
-checkout instead of retaining an expired waiter. Unconfirmed outcomes stay retryable,
-and commit acknowledgement precedes Redis wakeup. Delivery supervision restarts producers
-and coordinators together to preserve budgets.
-
-Deployment: [TCP load balancing](README.md#tcp-load-balancing).
+Wire reference: `/admin/tcp-protocol`. Deployment: [README](README.md#tcp-load-balancing).
