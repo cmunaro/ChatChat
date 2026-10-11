@@ -105,9 +105,10 @@ defmodule ChatchatTcp.Handler do
          {:ok, user_id}
          when is_integer(user_id) and user_id > 0 and user_id <= 9_223_372_036_854_775_807 <-
            ChatchatAuth.verify(token),
-         {:ok, _} <- Presence.register(user_id) do
+         {:ok, _} <- Presence.register(user_id),
+         :ok <- live_deadline(lease_deadline) do
       send_json(socket, %{type: "authenticated", user_id: user_id})
-      presence_timer = schedule_presence_renewal()
+      presence_timer = schedule_presence_renewal(lease_deadline)
       Delivery.wake(user_id)
       [{_pid, route}] = Presence.get_connections(user_id)
 
@@ -211,11 +212,13 @@ defmodule ChatchatTcp.Handler do
   def handle_info(:renew_presence, {socket, %{user_id: user_id} = state}) do
     deadline = System.monotonic_time(:millisecond) + PresenceRouting.heartbeat_ttl()
 
-    case lease_live?(state) && Presence.renew(user_id) do
-      :ok ->
-        timer = schedule_presence_renewal()
-        {:noreply, {socket, %{state | presence_deadline: deadline, presence_timer: timer}}}
-
+    with true <- lease_live?(state),
+         :ok <- Presence.renew(user_id),
+         true <- lease_live?(state),
+         :ok <- live_deadline(deadline) do
+      timer = schedule_presence_renewal(deadline)
+      {:noreply, {socket, %{state | presence_deadline: deadline, presence_timer: timer}}}
+    else
       _ ->
         unregister(state)
         Socket.close(socket)
@@ -263,12 +266,14 @@ defmodule ChatchatTcp.Handler do
   def handle_info({reference, _late_reply}, {socket, state}) when is_reference(reference),
     do: {:noreply, {socket, state}}
 
-  defp schedule_presence_renewal do
-    interval =
-      Application.fetch_env!(:chatchat_tcp, :presence_routing)
-      |> Keyword.fetch!(:heartbeat_interval)
+  defp schedule_presence_renewal(deadline) do
+    Process.send_after(self(), :renew_presence, PresenceRouting.renewal_delay(deadline))
+  end
 
-    Process.send_after(self(), :renew_presence, interval)
+  defp live_deadline(deadline) do
+    if System.monotonic_time(:millisecond) < deadline,
+      do: :ok,
+      else: {:error, :presence_unavailable}
   end
 
   defp touch_idle(%{user_id: nil} = state), do: state

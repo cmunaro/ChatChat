@@ -1,8 +1,9 @@
 # Controlled connection and traffic baseline
 
 Task 3 uses a fresh `chatchat-task3` deployment, PostgreSQL database, Redis,
-monitoring and barrier volumes. HAProxy remains in the path. No admission,
-presence, reconnect, delivery or health-check settings are increased. The runner
+monitoring and barrier volumes. HAProxy remains in the path. Resource allocations stay fixed; application behavior and health-check settings follow the checked-out source.
+Presence connection roles and bounds follow the checked-out implementation;
+record the source/image metadata for before/after comparisons. The runner
 refuses existing baseline resources or any running Docker containers. Do not stop
 another workload to make this check pass without authorization.
 
@@ -34,7 +35,7 @@ throttling, memory events, socket pressure and existing diagnostics are sampled.
 | --- | ---: | --- | ---: | ---: |
 | TCP | 2 | 0–3, shared only by TCP | 2 | 8 GiB |
 | Generators | 2 | 4–6, shared only by generators | 1.5 | 4 GiB |
-| HAProxy | 1, existing 2 threads | 7 | 1 | 2 GiB |
+| HAProxy | 1, 2 threads by default | 7 | 1 | 2 GiB |
 | PostgreSQL | 1 | 8 | 1 | 2 GiB |
 | Redis | 1 | 9 | 1 | 1 GiB |
 | Web / provision | 1 each, provision exits before load | 10 | 1 | 1 GiB |
@@ -53,7 +54,7 @@ options, not a guaranteed aggregate arrival rate; actual setup timing is capture
 Two generators claim shards from a three-participant barrier, deliberately holding
 activity. The runner starts traffic only after both wrappers are ready and **fresh
 TCP authenticated counts** equal the requested population. Each step then holds
-for 120 seconds, covering repeated 30-second leases and 10-second renewals and 30-second pings.
+for 120 seconds, covering repeated 30-second leases and renewals (8–12 seconds after task 8) and 30-second pings.
 A step passes the automated connection gate only with at least six observations,
 fresh sockets at or above 99.9% of the request throughout the hold, and zero
 recorded reconnect failures, with no observation gaps longer than 30 seconds. Closure/reconnect counts and missing observations
@@ -79,7 +80,7 @@ One protected ETS setting per simulator changes send probability through
 `ChatchatClient.set_simulation_send_probability/2`; wrappers read it on each tick.
 This avoids sequentially updating busy wrappers and preserves client stores.
 A 120-second drain sets send probability to zero while retaining clients and their
-outboxes. No failure injection is performed.
+outboxes. `--backend-outage` then resumes 0.01 traffic, stops one dedicated TCP node for 30 seconds, restarts it, observes 180 seconds of recovery and drains for another 120 seconds. Stopped-node probes remain unavailable.
 
 Client status retains existing attempt fields and adds unique confirmations,
 actual send/retry attempts, and cumulative confirmation-latency buckets at 10, 50,
@@ -92,7 +93,7 @@ messages; outstanding work is reported separately to expose unconfirmed tails. T
 
 `queued_messages - unique_confirmed_messages` is outstanding unique submitted
 work, including retained rejections. Population `outboxes.json` scans at connection hold and drain boundaries report actual outboxes, inbox identities and inflight
-attempts. They use eight workers, 25-ms client-state timeouts, a five-second scan
+attempts. They use eight workers, 25-ms client-state timeouts with one bounded retry, a five-second scan
 deadline per shard and a bounded 80k population; timestamps, unavailable clients and unscanned clients are explicit. Scans and counters
 are not atomic. Client process death can lose in-memory work; do not infer no loss
 unless scans, diagnostics, PostgreSQL backlog and final counters reconcile.
@@ -111,3 +112,31 @@ Service-free capture/gate regressions:
 python3 -m unittest discover -s observability -p 'test_capture*.py'
 python3 -m unittest discover -s observability -p 'test_baseline.py'
 ```
+
+For a same-image proxy comparison, build the first run only and use
+`--proxy-threads 2` and then `--proxy-threads 1`, with identical steps and traffic.
+The runner writes a private rendered configuration into each output directory;
+the checked-in configuration remains the default. Compare image IDs, CPU limits,
+setup duration, healthy check latency, listen-drop deltas and recovery observations.
+`timeout check 2s` bounds the response phase, following a connect timeout of 5s.
+With `inter 2s fall 3 rise 2`, a conservative failed-check detection budget is
+27 seconds (three connect/response/interval budgets), and healthy recovery is
+18 seconds (two such budgets), plus DNS, scheduling and observation delays.
+These configured budgets are not measured hard real-time guarantees.
+
+Queue counts come from outbox admission, including requests whose callers later
+time out; submission failures are separate. Older runs counted successful API
+returns and can undercount admitted work during overload. Sender confirmation
+still means receiver receipt or durable commit; receiver scans establish delivery.
+
+Use `--backend-outage --outage-mode pause` for a DNS-preserving failure: the runner
+pauses one TCP container for 30 seconds, always resumes it, observes 180 seconds
+of recovery and drains for 120 seconds. The default `stop` mode restarts the
+container and can remove it through Docker DNS before health failure hysteresis
+runs. Capture includes all active proxy states, including maintenance. Failed
+exporter observations remain unavailable.
+
+A server `presence_unavailable` error is transient: the client closes/reconnects
+with its existing outbox eligible for retry. Malformed or other uncorrelated
+protocol errors retain the existing explicit suspension policy; reconnect does
+not clear a prior safety hold.

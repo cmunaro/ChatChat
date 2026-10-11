@@ -20,8 +20,11 @@ QUERIES = {
     "stage_mean_ms": "sum by (instance, stage, phase) (rate(chatchat_delivery_stage_duration_milliseconds_sum{job=\"chatchat_tcp\"}[1m])) / sum by (instance, stage, phase) (rate(chatchat_delivery_stage_duration_milliseconds_count{job=\"chatchat_tcp\"}[1m]))",
     "stage_outcomes": "sum by (instance, stage, phase, outcome) (rate(chatchat_delivery_stage_total{job=\"chatchat_tcp\"}[1m]))",
     "disconnects": "sum by (instance, reason) (rate(chatchat_tcp_disconnections_total{job=\"chatchat_tcp\"}[1m]))",
-    "redis_p95_ms": "histogram_quantile(0.95, sum by (le, instance, operation) (rate(chatchat_redis_pipeline_duration_milliseconds_bucket{job=\"chatchat_tcp\"}[1m])))",
-    "redis_failures": "sum by (instance, operation) (rate(chatchat_redis_pipeline_failures_total{job=\"chatchat_tcp\"}[1m]))",
+    "presence_work_p95_ms": "histogram_quantile(0.95, sum by (le, instance, role) (rate(chatchat_presence_work_duration_milliseconds_bucket{job=\"chatchat_tcp\"}[1m])))",
+    "presence_work_outcomes": "sum by (instance, role, outcome) (rate(chatchat_presence_work_total{job=\"chatchat_tcp\"}[1m]))",
+    "heartbeat_age_seconds": "time() - chatchat_presence_heartbeat_last_success_timestamp_seconds{job=\"chatchat_tcp\"}",
+    "redis_p95_ms": "histogram_quantile(0.95, sum by (le, instance, role, operation) (rate(chatchat_redis_pipeline_duration_milliseconds_bucket{job=\"chatchat_tcp\"}[1m])))",
+    "redis_failures": "sum by (instance, role, operation) (rate(chatchat_redis_pipeline_failures_total{job=\"chatchat_tcp\"}[1m]))",
     "database_queue_p95_ms": "histogram_quantile(0.95, sum by (le, instance) (rate(chatchat_broker_prom_ex_ecto_repo_query_queue_time_milliseconds_bucket{job=\"chatchat_tcp\"}[1m])))",
     "database_execution_p95_ms": "histogram_quantile(0.95, sum by (le, instance) (rate(chatchat_broker_prom_ex_ecto_repo_query_execution_time_milliseconds_bucket{job=\"chatchat_tcp\"}[1m])))",
     "connections": "chatchat_tcp_connected_clients{job=\"chatchat_tcp\"}",
@@ -31,7 +34,8 @@ QUERIES = {
     "capacity": "{__name__=~\"chatchat_delivery_attempts|chatchat_delivery_waiting|chatchat_delivery_fallback_workers\",job=\"chatchat_tcp\"}",
     "scheduler_queue": "chatchat_tcp_prom_ex_beam_stats_run_queue_count{job=\"chatchat_tcp\"}",
     "sender_results": "sum by (instance, status, reason) (rate(chatchat_messages_results_total{job=\"chatchat_tcp\"}[1m]))",
-    "proxy_health": "haproxy_server_status{proxy=\"chatchat_tcp_nodes\",state=~\"UP|DOWN\"} == 1",
+    "proxy_health": "haproxy_server_status{proxy=\"chatchat_tcp_nodes\"} == 1",
+    "proxy_check_seconds": "haproxy_server_check_duration_seconds{proxy=\"chatchat_tcp_nodes\"}",
     "proxy_checks": "rate(haproxy_backend_check_up_down_total{proxy=\"chatchat_tcp_nodes\"}[1m])",
     "proxy_errors": "rate(haproxy_backend_connection_errors_total{proxy=\"chatchat_tcp_nodes\"}[1m])",
     "proxy_aborts": "rate(haproxy_backend_server_aborts_total{proxy=\"chatchat_tcp_nodes\"}[1m])",
@@ -142,7 +146,10 @@ case Process.whereis(ChatchatClient.LoadGenerator) do
         client_state = :sys.get_state(client, 25)
         %{available: true, connected: client_state.socket != nil,
           reconnect_timer: client_state.reconnect_timer != nil,
-          outbox_size: :gb_trees.size(client_state.store.outbox)}
+          outbox_size: :gb_trees.size(client_state.store.outbox),
+          reconnect_failures: Map.get(client_state, :reconnect_failures),
+          reconnect_delay_remaining_ms: if(is_reference(client_state.reconnect_timer),
+            do: Process.read_timer(client_state.reconnect_timer), else: nil)}
       catch
         _, _ -> %{available: false}
       end
@@ -168,7 +175,9 @@ redis = Process.registered()
     %{role: Atom.to_string(name), available: info != nil,
       process: if(info, do: Map.new(info), else: %{})}
   end)
-IO.puts(Jason.encode!(%{redis: redis, schedulers: :erlang.system_info(:schedulers_online),
+lanes = if function_exported?(ChatchatTcp.PresenceRedis, :snapshot, 0),
+  do: ChatchatTcp.PresenceRedis.snapshot(), else: []
+IO.puts(Jason.encode!(%{redis: redis, presence_lanes: lanes, schedulers: :erlang.system_info(:schedulers_online),
   run_queues: :erlang.statistics(:run_queue_lengths)}))
 """
 

@@ -11,7 +11,7 @@ defmodule ChatchatTcp.PresenceRouting do
 
   alias ChatchatTcp.RedisKeys
 
-  @redis ChatchatTcp.Redis
+  @redis ChatchatTcp.Redis.Heartbeat
   @node_id_key {__MODULE__, :node_id}
   @heartbeat_ttl_key {__MODULE__, :heartbeat_ttl}
 
@@ -24,6 +24,19 @@ defmodule ChatchatTcp.PresenceRouting do
   @spec heartbeat_ttl() :: pos_integer()
   def heartbeat_ttl, do: :persistent_term.get(@heartbeat_ttl_key)
 
+  @doc "Jittered renewal delay, capped by the conservative local lease deadline."
+  def renewal_delay(deadline) do
+    interval = Application.fetch_env!(:chatchat_tcp, :presence_routing)[:heartbeat_interval]
+    jitter = div(interval, 5)
+    delay = interval - jitter + :rand.uniform(2 * jitter + 1) - 1
+
+    remaining =
+      deadline - System.monotonic_time(:millisecond) -
+        2 * ChatchatTcp.PresenceRedis.Lane.timeout()
+
+    max(min(delay, remaining), 0)
+  end
+
   @impl GenServer
   def init(_options) do
     :ets.new(ChatchatTcp.Presence.Users, [:set, :named_table, :public])
@@ -31,6 +44,11 @@ defmodule ChatchatTcp.PresenceRouting do
     base_id = Keyword.fetch!(config, :node_id)
     ttl = Keyword.fetch!(config, :heartbeat_ttl)
     interval = Keyword.fetch!(config, :heartbeat_interval)
+
+    true =
+      interval > 0 and
+        interval + div(interval, 5) + 2 * ChatchatTcp.PresenceRedis.Lane.timeout() < ttl
+
     boot_id = Base.url_encode64(:crypto.strong_rand_bytes(9), padding: false)
     node_id = "#{base_id}-#{boot_id}"
 
@@ -66,9 +84,20 @@ defmodule ChatchatTcp.PresenceRouting do
   end
 
   defp refresh_heartbeat(node_id, ttl) do
-    case Redix.command(@redis, ["SET", RedisKeys.presence_node(node_id), "1", "PX", ttl]) do
-      {:ok, "OK"} -> :ok
-      {:error, reason} -> {:error, reason}
+    case Redix.command(@redis, ["SET", RedisKeys.presence_node(node_id), "1", "PX", ttl],
+           timeout: ChatchatTcp.PresenceRedis.Lane.timeout()
+         ) do
+      {:ok, "OK"} ->
+        :telemetry.execute(
+          [:chatchat, :presence, :heartbeat],
+          %{last_success: System.system_time(:second)},
+          %{}
+        )
+
+        :ok
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 

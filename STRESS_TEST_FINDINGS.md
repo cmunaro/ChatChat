@@ -455,3 +455,229 @@ pause/resume with busy/dead clients, invalid probability rejection, freshness,
 observation gaps and unsafe/missing-data traffic stops. A TCP test observer was
 scoped to the emitting connection to avoid unrelated late closure events; production
 closure behavior was unchanged.
+
+
+## Tasks 8, 6 and 4 implementation and intermediate evidence
+
+Presence now has a dedicated heartbeat connection and four fixed user shards each
+for session/route and renewal operations. Each lane caps reservations at 512 and
+shares a five-second queue/command budget; existing callers execute Redis work,
+without extra per-operation processes. Timeouts discard the pinned socket and
+restart its lane. Atomic ownership, boot identity and lease expiry remain intact.
+Renewals jitter between 8 and 12 seconds with a conservative local lease deadline.
+A bounded supervisor restart budget accommodates simultaneous lane failures.
+
+Client socket reconnects and wrapper startup/recreation use jittered exponential
+backoff: 0.8–1 seconds initially, capped at 24–30 seconds. One tagged timer belongs
+to each owner; wrappers do not recreate live clients. Authentication resets the
+backoff. The 200-client integration test measured a five-second authentication
+outage across the complete population, at most three attempts/client, repeated
+failed-attempt intervals of at least 1.59 seconds, preserved pending identities,
+and all 200 eventual confirmations. Socket reconnect retains the in-memory stores;
+client process death still loses them and remains a recovery limitation.
+
+Persistence now receives the sender's absolute deadline inside its worker, capped
+at the existing five-second budget. Installed DBConnection 2.10.2 starts its
+connection deadline after checkout; its checkout receive does not independently
+bound pool waiting. `queue: false` therefore refuses a busy pool rather than
+waiting past the sender budget. Remaining budget is checked before each write and
+identity read; transaction/commit share the deadline. Only confirmed commit or
+receiver receipt can acknowledge success. Late confirmed rows remain recoverable,
+and post-commit Redis wakeup cannot delay the commit acknowledgement.
+
+The intermediate `/tmp/chatchat-tasks8-6-20261010/` run used the same task 3 CPU
+allocation. It passed the 60k and 80k connection holds and sustained about 800.1
+queued/confirmed messages/s at 80k, p95 ≤50ms, with zero final outstanding work in
+that stable traffic phase. Presence Redix mailboxes peaked at two during the
+connection holds and one during stable traffic. The 4k/s step failed after about
+34 seconds, with sockets falling to approximately 32–35k and unavailable generator
+probes. Eight lane timeouts within one second exceeded the original supervisor's
+3-in-5-second restart limit, escalating socket resets to the listener/ownership
+supervision tree. The final implementation corrects this and tests simultaneous
+failure of all eight lanes. The intermediate failure is not an improvement claim.
+Its final scan observed only 55,638 clients, with 2,824 unavailable and 21,538
+unscanned; PostgreSQL still had 3,055 pending rows. No full recovery/no-loss claim
+is made. Isolated application tables were verified empty and resources removed.
+
+Through the stable connection and 800/s phases, 110 sampled HAProxy check durations
+had median 25ms and maximum 729ms. Across the unsafe traffic/recovery phases the
+maximum reached 2.327 seconds. The explicit two-second response timeout is based
+on stable intended load, retains the existing `/metrics` endpoint, and does not
+promise healthy classification under overload. Connect timeout remains five
+seconds and hysteresis remains `inter 2s fall 3 rise 2`; configured conservative
+detection/recovery budgets and measurement limits are in `observability/BASELINE.md`.
+
+Queue instrumentation now counts admission at the client outbox owner rather than
+successful API returns. A caller timeout can follow actual admission; older
+measurements can undercount queued identities during overload. A regression
+covers admission after caller timeout. Sender confirmation remains distinct from
+receiver delivery; final scans must reconcile before any no-loss assertion.
+
+All 145 umbrella tests passed, including deadline scheduling, busy checkout,
+statement cancellation/retry, late confirmed commit, failed wakeup, burst Redis
+lane failure and population reconnect recovery. Format, high-priority Credo,
+warnings-as-errors compilation and 17 Python capture/baseline tests passed.
+
+
+## Tasks 5 and 7 final controlled validation (2026-10-11 UTC)
+
+The paired comparison artifacts are `/tmp/chatchat-final-two-20261011/` and
+`/tmp/chatchat-final-one-20261011/`. Both used identical release image IDs and
+recorded application source hashes, the task 3 fixed CPU/memory allocation,
+80,000 clients, 128-byte payloads and 0.01 send probability. The private proxy
+configurations differed only in `nbthread`. Both passed the 120-second connection
+hold and sustained the 120-second traffic phase without observed disconnects or
+reconnects. The comparison is one trial per configuration, not a statistical
+estimate of thread-count effects.
+
+| Observation | Two proxy threads | One proxy thread |
+| --- | ---: | ---: |
+| Setup to all-ready, approximate wall time | 202 s | 212 s |
+| Stable sender confirmations/s | 799.4 | 800.0 |
+| Stable confirmation p95 upper bucket | 50 ms | 50 ms |
+| Stable mean confirmation latency | 10.1 ms | 6.8 ms |
+| Stable traffic Redix mailbox peak | 5 | 3 |
+| First full socket recovery sample after restart | 120 s | 150 s |
+| Recovery proxy namespace listen-drop delta | 71,648 | 203,590 |
+| Final unique admissions / confirmations / inbox identities | 241,863 each | 243,131 each |
+
+Each run resumed 0.01 traffic, stopped one dedicated TCP container for 30 seconds,
+restarted it, observed 180 seconds of recovery, then paused submissions and drained
+for 120 seconds. Both final scans covered all 80,000 clients with zero unavailable
+or unscanned clients, zero outboxes/inflight attempts, and zero PostgreSQL pending
+rows. Unique inbox totals exactly matched admissions and sender confirmations.
+There were no unexplained missing unique identities in these workloads. This is
+aggregate reconciliation backed by existing identity/deduplication invariants,
+not an independent per-message journal or a guarantee for arbitrary failures.
+Redis/PostgreSQL remained alive; intentional client process crashes, persistent
+backend storage failures and multi-node simultaneous outages were not tested.
+
+During two-thread recovery, sampled session/renewal reservations peaked at 9/54
+and Redis mailboxes at 4/50. One-thread recovery reached the explicit 512-slot
+limit in both roles, with mailbox peaks 505/471; overload stayed bounded and the
+final scan reconciled. Heartbeat remained a separate connection. Memory peaks
+were below configured limits, and sampled cgroup OOM-kill counters stayed zero.
+The largest sampled two-thread TCP memory was about 6.26 GiB against an 8-GiB
+limit; generators stayed below 3 GiB against 4 GiB. Proxy FD peaks were about
+160k against 1,048,576. Native samples were untruncated; stable accept queues
+were empty and namespace listen-drop deltas zero. Outage/reconnect phases filled
+proxy queues to 4097 against backlog 4096. Namespace counters do not exclusively
+identify one listener. FD, source-port and backlog limits were not raised.
+
+Retain the existing two-thread proxy setting: one thread did not improve sustained
+throughput, took longer to recover in this trial, saturated presence reservations,
+and had more observed listen drops. One thread's lower stable mean latency is a
+real observed tradeoff; this comparison does not establish a universal optimum.
+Compared with task 3, sustainable throughput remains about 800/s and p95 remains
+≤50ms. The final two-thread stable mailbox peak fell from 99 to 5, but mean latency
+rose from 5.3 to 10.1ms. These changes establish bounded work and recovery evidence,
+not a general throughput or latency improvement. The corrected final images were
+not retested at 4k/s; that rate remains unproven/unsafe from preceding runs. The
+interval between 800 and 4,000/s and the true connection ceiling remain untested.
+
+HAProxy checks during the final two-thread setup peaked at 1.110 seconds, the
+connection hold at 25ms, and stable traffic at 46ms. Both stable runs retained
+healthy backend status with successful exporter observations. The explicit
+`timeout check 2s`, connect timeout 5s and `inter 2s fall 3 rise 2` remain within
+the documented conservative budgets. During large reconnect bursts, exporter
+scrapes failed intermittently and observed check durations reached 3.684 seconds
+(two threads) and 3.186 seconds (one); connect/scheduling time is additional to
+the response timeout. Exact large-outage removal timing cannot be inferred from
+missing exporter samples. The metrics endpoint is suitable at the validated
+stable load; health behavior under overload remains a limitation.
+
+A separate bounded 1,000-client check in
+`/tmp/chatchat-health-check-20261011/` observed Docker-stop removal into `MAINT`
+within five seconds and restoration to `UP` within five seconds in a five-second
+Prometheus range sample. The survivor stayed UP throughout. This exercised DNS
+removal, rather than failure hysteresis. Capture now includes all active states,
+including MAINT/DRAIN/NOLB; UP/DOWN filtering had hidden maintenance transitions.
+A separate backend-pause check keeps DNS intact to verify timeout hysteresis.
+
+Both large runs and the Docker-stop health run saved final evidence before
+cleanup, verified isolated application counts `0|0|0`, and removed their project
+containers/volumes. No shared data was flushed. Verification remains 145 passing
+umbrella tests and all repository gates, plus 17 passing capture/baseline Python
+tests after the proxy-state capture correction.
+
+
+### Backend pause exposed a transient client safety-hold bug
+
+The 1,000-client DNS-preserving pause check in
+`/tmp/chatchat-health-pause-20261011/` observed DOWN within 15 seconds and UP
+within five seconds of resume in five-second Prometheus range samples. The
+survivor stayed UP. This independently verifies failure hysteresis, rather than
+Docker DNS maintenance removal. Its short 30-second drain retained two identities.
+A repeat in `/tmp/chatchat-health-pause-drain-20261011/` retained seven after a
+120-second drain; complete bounded retry probes found five connected, suspended
+clients. All 1,267 admissions were accounted for by 1,260 inbox identities plus
+seven retained outbox identities, with zero PostgreSQL pending rows. Extending the
+drain did not clear the explicit retry hold, so no full pause-recovery claim is
+made for these pre-fix images. Both isolated databases were cleaned and removed.
+
+The server's `presence_unavailable` response can accompany lease expiry while
+paused. The client previously classified every generic error as a protocol safety
+hold, including this transient response; successful reconnect retained that hold.
+The owning response handler now returns a reconnect failure for this specific
+reason without suspending the outbox. Other malformed/uncorrelated errors remain
+suspended, and an existing safety hold is never cleared implicitly. Regression
+coverage verifies retained identity, actual reconnect, retry and matching
+confirmation, the synchronous request path, and preservation of prior holds.
+
+The updated suite passed 147 umbrella tests and all repository gates. A fixture
+startup timeout was corrected by allowing five seconds for the fake backend's
+initial handshake and cleaning up partially created populations. The client suite
+also passed all 40 tests at the previously failing seed (89865). The paired
+thread comparison above predates this response-policy correction; its two trials
+still used identical images. A final rebuilt 80k pause/recovery run validates the
+checked-out response policy separately.
+
+
+### Final rebuilt pause/recovery result
+
+`/tmp/chatchat-final-recovery-20261011/` used the corrected response policy,
+80,000 clients, two proxy threads and the unchanged fixed resource allocation.
+Reproduce from the repository root:
+
+```sh
+caffeinate -i python3 observability/run_baseline.py --build \
+  --output /tmp/chatchat-new-pause-run --steps 80000 --traffic 0.01 \
+  --backend-outage --outage-mode pause --proxy-threads 2
+```
+
+Setup reached all 80k clients in about 152 seconds, and the 120-second hold passed
+with no observed disconnects/reconnects. Stable traffic measured **797.1 unique
+confirmations/s**, p95 ≤50ms and mean 6.9ms; all 95,840 identities reconciled in
+the complete pre-fault receiver scan. Stable Redix mailbox peak was nine and
+session/renewal reservations peaked at 2/17.
+
+After pausing one backend for 30 seconds, both exporter observations stayed
+available through the pause; the unavailable backend reached DOWN by the
+20-second sample while its survivor stayed UP. Checks reached the explicit
+two-second response timeout. Recovery produced substantial reconnect pressure:
+11 proxy exporter samples failed, the proxy namespace listen-drop delta was
+423,774, and the accept queue reached 4097/4096. Exact health restoration timing
+is unavailable in those missing samples. Temporary overlapping old/new connection
+handlers produced a count above 80k during lease replacement; that is not a unique
+user capacity result. Continuous exact 80k socket observations resumed about
+190.5 seconds after resume, early in the drain. Queued/command execution remained
+bounded: session/renewal reservations peaked at 498/445, mailboxes at 491/300,
+and heartbeat mailbox at zero. Sampled memory stayed below limits with zero
+OOM-kill counters; largest TCP memory was about 6.10 GiB against 8 GiB.
+
+The final scan covered **all 80,000 clients**, with zero unavailable or unscanned.
+**240,695 admissions = 240,695 sender confirmations = 240,695 unique inbox
+identities**. Outboxes, inflight attempts and PostgreSQL pending rows were all
+zero. Client protocol-suspension and rejected-message counters were zero. This
+reconciles the checked-out implementation after the DNS-preserving failure that
+exposed the earlier hold bug. It does not imply a ≤50ms outage latency: recovery
+confirmation p95 exceeded the final 10-second bucket. The fault recovery was
+slower than restart recovery and remains a measured operational limit.
+
+Final evidence was saved before writer shutdown. Dedicated application tables
+were verified `0|0|0`; all temporary containers and project volumes were removed.
+Final verification: 147 passing umbrella tests, 40 passing client tests at the
+previously failing seed, format, high-priority Credo, warnings-as-errors compile,
+17 capture/baseline Python tests, and clean whitespace checks. Changes are local
+and uncommitted. Sustainable throughput beyond approximately 800/s remains
+unproven; no admission, worker, pool, FD, port or backlog limits were increased.

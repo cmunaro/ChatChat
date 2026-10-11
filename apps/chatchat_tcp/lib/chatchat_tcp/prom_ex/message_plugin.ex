@@ -53,10 +53,29 @@ defmodule ChatchatTcp.PromEx.MessagePlugin do
         tags: [:reason],
         description: "TCP connection closures by bounded reason."
       ),
+      last_value([:chatchat, :presence, :heartbeat, :last_success_timestamp_seconds],
+        event_name: [:chatchat, :presence, :heartbeat],
+        measurement: :last_success,
+        description: "Last confirmed refresh of this node's Redis heartbeat."
+      ),
+      distribution([:chatchat, :presence, :work, :duration, :milliseconds],
+        event_name: [:chatchat, :presence, :work],
+        measurement: :duration,
+        tags: [:role, :outcome],
+        unit: {:native, :millisecond},
+        reporter_options: [buckets: @buckets],
+        description: "Bounded presence work latency including admission and queueing."
+      ),
+      counter([:chatchat, :presence, :work, :total],
+        event_name: [:chatchat, :presence, :work],
+        measurement: :count,
+        tags: [:role, :outcome],
+        description: "Presence work outcomes, including overload."
+      ),
       distribution([:chatchat, :redis, :pipeline, :duration, :milliseconds],
         event_name: [:redix, :pipeline, :stop],
         measurement: :duration,
-        tags: [:operation, :outcome],
+        tags: [:role, :operation, :outcome],
         tag_values: &redis_tags/1,
         drop: &other_redis?/1,
         unit: {:native, :millisecond},
@@ -66,7 +85,7 @@ defmodule ChatchatTcp.PromEx.MessagePlugin do
       counter([:chatchat, :redis, :pipeline, :failures, :total],
         event_name: [:redix, :pipeline, :stop],
         measurement: fn _measurements -> 1 end,
-        tags: [:operation],
+        tags: [:role, :operation],
         tag_values: &redis_tags/1,
         drop: fn metadata -> other_redis?(metadata) or metadata[:kind] != :error end,
         description: "TCP Redis pipeline failures."
@@ -74,7 +93,13 @@ defmodule ChatchatTcp.PromEx.MessagePlugin do
     ]
   end
 
-  defp other_redis?(metadata), do: metadata[:connection_name] != ChatchatTcp.Redis
+  defp other_redis?(metadata),
+    do: is_nil(redis_role(metadata))
+
+  defp redis_role(metadata) do
+    name = metadata[:connection_name] || get_in(metadata, [:extra_metadata, :connection_name])
+    ChatchatTcp.PresenceRedis.role(name)
+  end
 
   defp redis_tags(metadata) do
     operation =
@@ -87,7 +112,11 @@ defmodule ChatchatTcp.PromEx.MessagePlugin do
         _ -> :pipeline
       end
 
-    %{operation: operation, outcome: if(metadata[:kind] == :error, do: :error, else: :ok)}
+    %{
+      role: redis_role(metadata),
+      operation: operation,
+      outcome: if(metadata[:kind] == :error, do: :error, else: :ok)
+    }
   end
 
   defp collection_metrics do

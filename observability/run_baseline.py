@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import json
 import hashlib
 import os
+import re
 from pathlib import Path
 import secrets
 import subprocess
@@ -50,10 +51,32 @@ def snapshot_metadata(env, args, output):
     (output / "metadata.json").write_text(json.dumps({"containers": metadata, "beams": beams,
         "haproxy_version": command(["docker", "exec", args.haproxy_container[0], "haproxy", "-vv"]),
         "host": command(["docker", "info", "--format", "{{.NCPU}} {{.MemTotal}} {{.ServerVersion}}"]),
-        "source_sha256": {str(path.relative_to(ROOT)): hashlib.sha256(path.read_bytes()).hexdigest() for path in [ROOT / "docker-compose.baseline.yml", ROOT / "observability/run_baseline.py", ROOT / "observability/capture_diagnostics.py", ROOT / "mise.toml", ROOT / "mix.lock"]},
+        "source_sha256": {str(path.relative_to(ROOT)): hashlib.sha256(path.read_bytes()).hexdigest() for path in [ROOT / "docker-compose.baseline.yml", ROOT / "observability/run_baseline.py", ROOT / "observability/capture_diagnostics.py", ROOT / "mise.toml", ROOT / "mix.lock", ROOT / "apps/chatchat_tcp/lib/chatchat_tcp/presence.ex", ROOT / "apps/chatchat_tcp/lib/chatchat_tcp/presence_routing.ex", ROOT / "apps/chatchat_tcp/lib/chatchat_tcp/handler.ex", ROOT / "apps/chatchat_tcp/lib/chatchat_tcp/presence_redis.ex", ROOT / "apps/chatchat_client/lib/chatchat_client.ex", ROOT / "apps/chatchat_client/lib/chatchat_client/simulated_client.ex", ROOT / "apps/chatchat_client/lib/chatchat_client/reconnect_backoff.ex"]},
         "commit": command(["git", "rev-parse", "HEAD"]),
         "diff": command(["git", "diff", "--stat"]),
         "bounds": {"setup_seconds": 240, "shards": 2, "capture_interval_seconds": 10}}, indent=2) + "\n")
+
+
+def proxy_config(threads):
+    source = (ROOT / "observability/haproxy.cfg").read_text()
+    configured, count = re.subn(r"^  nbthread \d+$", f"  nbthread {threads}", source, flags=re.MULTILINE)
+    if count != 1:
+        raise RuntimeError("baseline requires one explicit HAProxy nbthread setting")
+    return configured
+
+
+def failure_snapshot(args, directory):
+    """Save bounded process-failure headers, never request contents or environments."""
+    rows = {}
+    for container in args.tcp_container + args.loadgen_container:
+        state = json.loads(command(["docker", "inspect", "--format",
+            '{{json .State}}', container]))
+        logs = subprocess.run(["docker", "logs", "--tail", "1000", container],
+            capture_output=True, text=True, timeout=5)
+        headers = re.findall(r"GenServer (Elixir\.[\w.]+|Chatchat[\w.]+|#PID<[^>]+>) terminating", logs.stdout + logs.stderr)
+        rows[container] = {"oom_killed": state["OOMKilled"],
+            "running": state["Running"], "failure_headers": headers[-32:]}
+    (directory / "failure-events.json").write_text(json.dumps(rows, indent=2) + "\n")
 
 
 def clients(sample):
@@ -89,7 +112,7 @@ def outbox_snapshot(args):
         end, fn _ -> :ok end);
       totals = stream |> Stream.take_while(fn _ -> System.monotonic_time(:millisecond) < deadline end) |> Task.async_stream(fn pid ->
         try do
-          state = :sys.get_state(pid, 25);
+          state = try do :sys.get_state(pid, 25) catch :exit, _ -> :sys.get_state(pid, 25) end;
           %{observed: 1, unavailable: 0, connected: if(state.socket, do: 1, else: 0),
             outbox: :gb_trees.size(state.store.outbox), inbox: :gb_trees.size(state.store.inbox),
             inflight: map_size(state.inflight)}
@@ -143,7 +166,9 @@ def phase(args, output, label, duration, requested, setup=False, traffic=False, 
             states = clients(sample)
             sockets = authenticated(sample)
             if len(samples) % 3 == 1:
-                print(f"{label}: {int(time.time()-start)}s authenticated={sockets} wrappers={sum(s['ready_clients'] for s in states)} queued={sum(s['queued_messages'] for s in states)} confirmed={sum(s['unique_confirmed_messages'] for s in states)}", flush=True)
+                counts = {key: sum(state[key] for state in states) if len(states) == 2 else None
+                          for key in ("ready_clients", "queued_messages", "unique_confirmed_messages")}
+                print(f"{label}: {int(time.time()-start)}s authenticated={sockets} wrappers={counts['ready_clients']} queued={counts['queued_messages']} confirmed={counts['unique_confirmed_messages']}", flush=True)
             if setup and time.time() - start <= duration and len(states) == 2 and all(s["phase"] == "ready" for s in states) and sockets == requested:
                 ready = True
                 break
@@ -194,6 +219,11 @@ def main():
     parser.add_argument("--hold", type=int, default=120)
     parser.add_argument("--traffic", type=float, nargs="+", default=[.01, .05, .10, .20])
     parser.add_argument("--build", action="store_true")
+    parser.add_argument("--proxy-threads", type=int, choices=[1, 2], default=2)
+    parser.add_argument("--backend-outage", action="store_true",
+                        help="interrupt one dedicated TCP node for 30s, then observe 180s recovery at .01 traffic")
+    parser.add_argument("--outage-mode", choices=["stop", "pause"], default="stop",
+                        help="pause keeps DNS intact to exercise health timeout and lease expiry")
     parser.add_argument("--socket-probe-image", default="chatchat-socket-probe")
     opts = parser.parse_args()
     if opts.hold < 90 or any(n <= 0 or n > 80000 or n % 2 for n in opts.steps) or opts.steps != sorted(set(opts.steps)) or any(p <= 0 or p > 1 for p in opts.traffic) or opts.traffic != sorted(set(opts.traffic)):
@@ -208,7 +238,10 @@ def main():
     if command(["docker", "volume", "ls", "-q", "--filter", f"label=com.docker.compose.project={PROJECT}"]):
         raise RuntimeError("existing baseline volumes; do not reuse data")
     opts.output.mkdir(parents=True, exist_ok=False)
-    env = dict(os.environ, TCP_CLUSTER_COOKIE=secrets.token_hex(32))
+    configuration = opts.output.resolve() / "haproxy.cfg"
+    configuration.write_text(proxy_config(opts.proxy_threads))
+    env = dict(os.environ, TCP_CLUSTER_COOKIE=secrets.token_hex(32),
+               BASELINE_HAPROXY_CONFIG=str(configuration))
     results = []
     try:
         if opts.build:
@@ -238,6 +271,7 @@ def main():
             results.append({"requested": count, "ready": ready, "stable": accepted})
             print(f"connection step {count}: stable={accepted}", flush=True)
             if not accepted:
+                failure_snapshot(args, directory)
                 break
             largest = count
         if largest is not None:
@@ -262,6 +296,25 @@ def main():
                     break
             set_traffic(args, 0.0)
             phase(args, opts.output, "drain", 120, largest)
+            if opts.backend_outage:
+                set_traffic(args, .01)
+                node = args.tcp_container[0]
+                actions = []
+                pause = opts.outage_mode == "pause"
+                try:
+                    command(["docker", "pause", node] if pause else
+                            ["docker", "stop", "--time", "10", node], timeout=30)
+                    actions.append({"action": "paused" if pause else "stopped", "container": node,
+                                    "timestamp": datetime.now(timezone.utc).isoformat()})
+                    phase(args, opts.output, "backend-outage", 30, largest, population=False)
+                finally:
+                    command(["docker", "unpause" if pause else "start", node], timeout=30)
+                    actions.append({"action": "resumed" if pause else "started", "container": node,
+                                    "timestamp": datetime.now(timezone.utc).isoformat()})
+                    (opts.output / "outage-actions.json").write_text(json.dumps(actions, indent=2) + "\n")
+                phase(args, opts.output, "backend-recovery", 180, largest, population=False)
+                set_traffic(args, 0.0)
+                phase(args, opts.output, "recovery-drain", 120, largest)
     finally:
         (opts.output / "results.json").write_text(json.dumps(results, indent=2) + "\n")
         # Save counters above before writers stop. Only this fresh project's volumes are removed.

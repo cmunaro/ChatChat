@@ -115,7 +115,7 @@ defmodule ChatchatTcp.DiagnosticsTest do
     duration = System.convert_time_unit(10, :millisecond, :native)
 
     metadata = %{
-      connection_name: ChatchatTcp.Redis,
+      connection_name: ChatchatTcp.Redis.Heartbeat,
       commands: [["EVALSHA", "secret-key", "private-payload"]],
       kind: :error,
       reason: "secret-error"
@@ -128,6 +128,16 @@ defmodule ChatchatTcp.DiagnosticsTest do
       | connection_name: :unrelated
     })
 
+    :telemetry.execute(
+      [:redix, :pipeline, :stop],
+      %{duration: duration},
+      %{
+        metadata
+        | connection_name: nil
+      }
+      |> Map.put(:extra_metadata, %{connection_name: ChatchatTcp.Redis.Renewal0})
+    )
+
     scrape = TelemetryMetricsPrometheus.Core.scrape(__MODULE__.Metrics)
 
     assert scrape =~ "chatchat_delivery_stage_duration_milliseconds_bucket"
@@ -138,9 +148,15 @@ defmodule ChatchatTcp.DiagnosticsTest do
     assert scrape =~ ~s(chatchat_tcp_disconnections_total{reason="peer_close"} 1)
 
     assert scrape =~
-             ~s(chatchat_redis_pipeline_duration_milliseconds_sum{operation="script",outcome="error"} 10)
+             ~s(chatchat_redis_pipeline_duration_milliseconds_sum{operation="script",outcome="error",role="heartbeat"} 10)
 
-    assert scrape =~ ~s(chatchat_redis_pipeline_failures_total{operation="script"} 1)
+    assert scrape =~
+             ~s(chatchat_redis_pipeline_failures_total{operation="script",role="heartbeat"} 1)
+
+    assert scrape =~
+             ~s(chatchat_redis_pipeline_failures_total{operation="script",role="renewal"} 1)
+
+    refute scrape =~ "Renewal0"
     refute scrape =~ "secret"
     refute scrape =~ "private-payload"
     refute scrape =~ "unrelated"

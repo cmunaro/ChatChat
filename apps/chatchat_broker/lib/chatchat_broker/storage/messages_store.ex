@@ -10,15 +10,29 @@ defmodule ChatchatBroker.Storage.MessagesStore do
   @doc "Commits pending ownership, checking immutable content on identical retries."
   def insert_pending(attributes, timeout \\ @timeout)
       when is_integer(timeout) and timeout > 0 and timeout <= @timeout do
+    insert_pending_before(attributes, System.monotonic_time(:millisecond) + timeout)
+  end
+
+  @doc "Commits within one absolute budget; expired work never starts a write."
+  def insert_pending_before(attributes, deadline) when is_integer(deadline) do
+    deadline = min(deadline, System.monotonic_time(:millisecond) + @timeout)
+
+    if deadline <= System.monotonic_time(:millisecond),
+      do: {:error, :deadline},
+      else: insert_before(attributes, deadline)
+  end
+
+  defp insert_before(attributes, deadline) do
     attributes = Map.take(attributes, [:sender_id, :message_id, :receiver_id, :payload])
     attributes = Map.put(attributes, :inserted_at, DateTime.utc_now())
 
     Repo.transaction(
       fn ->
-        Repo.insert_all(Message, [attributes],
-          on_conflict: :nothing,
-          conflict_target: [:sender_id, :message_id],
-          timeout: timeout
+        Repo.insert_all(
+          Message,
+          [attributes],
+          [on_conflict: :nothing, conflict_target: [:sender_id, :message_id]] ++
+            write_options(deadline)
         )
 
         stored =
@@ -28,7 +42,7 @@ defmodule ChatchatBroker.Storage.MessagesStore do
             m.sender_id == ^attributes.sender_id and m.message_id == ^attributes.message_id
           )
           |> lock("FOR UPDATE")
-          |> Repo.one!(timeout: timeout)
+          |> Repo.one!(write_options(deadline))
 
         if stored.receiver_id == attributes.receiver_id and stored.payload == attributes.payload do
           stored
@@ -36,7 +50,9 @@ defmodule ChatchatBroker.Storage.MessagesStore do
           Repo.rollback(:identity_conflict)
         end
       end,
-      timeout: timeout
+      timeout: max(deadline - System.monotonic_time(:millisecond), 1),
+      deadline: deadline,
+      queue: false
     )
   rescue
     error in Postgrex.Error ->
@@ -46,6 +62,12 @@ defmodule ChatchatBroker.Storage.MessagesStore do
 
     _error in [DBConnection.ConnectionError, Ecto.NoResultsError] ->
       {:error, :unavailable}
+  end
+
+  defp write_options(deadline) do
+    remaining = deadline - System.monotonic_time(:millisecond)
+    if remaining <= 0, do: Repo.rollback(:deadline)
+    [timeout: remaining, deadline: deadline, queue: false]
   end
 
   @doc "Bounded composite-identity page. Call with nil after an empty page to wrap."

@@ -64,7 +64,10 @@ defmodule ChatchatTcp.ClusterDeliveryTest do
              nil
 
     assert {:ok, nil} =
-             Redix.command(ChatchatTcp.Redis, ["GET", "chatchat:message:#{request.message_id}"])
+             Redix.command(ChatchatTcp.Redis.Heartbeat, [
+               "GET",
+               "chatchat:message:#{request.message_id}"
+             ])
   end
 
   test "sender-node death after commit leaves safe retry ownership", context do
@@ -99,7 +102,7 @@ defmodule ChatchatTcp.ClusterDeliveryTest do
     assert {:ok, %{"status" => "ok"}} = recv(from)
     assert Repo.get_by(Message, sender_id: context.sender.id, message_id: request.message_id)
     # Expire this fixture's unavailable session lease, then recover on this node.
-    Redix.command(ChatchatTcp.Redis, [
+    Redix.command(ChatchatTcp.Redis.Heartbeat, [
       "PEXPIRE",
       ChatchatTcp.RedisKeys.presence_route(context.receiver.id),
       1

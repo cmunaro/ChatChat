@@ -4,7 +4,6 @@ defmodule ChatchatClient do
   alias ChatchatClient.{Api, ConnectionDiagnostics, Socket, Store}
 
   @ping_interval 30_000
-  @reconnect_interval 1_000
 
   @spec run(binary()) :: pid()
   def run(username, options \\ []) when is_binary(username) do
@@ -12,15 +11,13 @@ defmodule ChatchatClient do
          {:ok, token} <- Api.login(username),
          {:ok, socket, user_id} <- Socket.connect(token),
          {:ok, pid} <-
-           GenServer.start(__MODULE__, %{
+           start_connected(%{
              result_observer: Keyword.get(options, :result_observer),
              username: username,
              user_id: user_id,
              token: token,
              socket: socket
-           }),
-         :ok <- :gen_tcp.controlling_process(socket, pid),
-         :ok <- GenServer.call(pid, :activate_socket) do
+           }) do
       pid
     else
       {:error, reason} -> raise "could not start client: #{inspect(reason)}"
@@ -34,19 +31,42 @@ defmodule ChatchatClient do
 
     with {:ok, socket, ^user_id} <- Socket.connect(token),
          {:ok, pid} <-
-           GenServer.start(__MODULE__, %{
+           start_connected(%{
              result_observer: Keyword.get(options, :result_observer),
              username: username,
              user_id: user_id,
              token: token,
              socket: socket,
              preprovisioned: true
-           }),
-         :ok <- :gen_tcp.controlling_process(socket, pid),
-         :ok <- GenServer.call(pid, :activate_socket) do
+           }) do
       pid
     else
       {:error, reason} -> raise "could not start preprovisioned client: #{inspect(reason)}"
+    end
+  end
+
+  defp start_connected(state) do
+    case GenServer.start(__MODULE__, state) do
+      {:ok, pid} ->
+        result =
+          try do
+            with :ok <- :gen_tcp.controlling_process(state.socket, pid),
+                 :ok <- GenServer.call(pid, :activate_socket),
+                 do: {:ok, pid}
+          catch
+            :exit, _ -> {:error, :activation_failed}
+          end
+
+        unless match?({:ok, _}, result) do
+          Socket.close(state.socket)
+          Process.exit(pid, :kill)
+        end
+
+        result
+
+      error ->
+        Socket.close(state.socket)
+        error
     end
   end
 
@@ -109,6 +129,9 @@ defmodule ChatchatClient do
       Map.merge(state, %{
         ping_timer: nil,
         reconnect_timer: nil,
+        reconnect_generation: nil,
+        reconnect_failures: 0,
+        last_reconnect_attempt: nil,
         retry_timer: nil,
         inflight: %{},
         store: Store.new(state.user_id)
@@ -126,7 +149,7 @@ defmodule ChatchatClient do
   def handle_call(:user_id, _from, state), do: {:reply, state.user_id, state}
 
   def handle_call(:activate_socket, _from, state) do
-    {:reply, Socket.activate(state.socket), state}
+    {:reply, activate_socket(state.socket), state}
   end
 
   def handle_call({:is_online, user_id}, _from, state) do
@@ -149,6 +172,7 @@ defmodule ChatchatClient do
   def handle_call({:send_message, user_id, message}, _from, state) do
     case Store.put_outbox(state.store, user_id, message) do
       {:ok, id, store} ->
+        if observer = Map.get(state, :result_observer), do: send(observer, {:delivery_queued, id})
         send(self(), :retry_outbox)
         {:reply, {:ok, id}, %{state | store: store}}
 
@@ -236,21 +260,46 @@ defmodule ChatchatClient do
   def handle_info({:tcp_closed, _stale_socket}, state), do: {:noreply, state}
   def handle_info({:tcp_error, _stale_socket, _reason}, state), do: {:noreply, state}
 
+  def handle_info({:reconnect, generation}, state) do
+    if Map.get(state, :reconnect_generation) == generation,
+      do: handle_info(:reconnect, state),
+      else: {:noreply, state}
+  end
+
   def handle_info(:reconnect, %{socket: nil} = state) do
-    state = %{state | reconnect_timer: nil}
+    cancel_timer(state.reconnect_timer)
+    started = System.monotonic_time(:millisecond)
+
+    if previous = Map.get(state, :last_reconnect_attempt),
+      do: ConnectionDiagnostics.emit_interval(state, :reconnect, started - previous)
+
+    state =
+      Map.merge(state, %{
+        reconnect_timer: nil,
+        reconnect_generation: nil,
+        last_reconnect_attempt: started
+      })
 
     ConnectionDiagnostics.emit(state, :reconnect_attempt)
 
     with {:ok, token} <- reconnect_step(state, :token, fn -> reconnect_token(state) end),
          {:ok, socket, _user_id} <-
            reconnect_step(state, :connect_authenticate, fn -> Socket.connect(token) end),
-         :ok <- reconnect_step(state, :activate, fn -> Socket.activate(socket) end) do
-      state = %{state | token: token, socket: socket}
+         :ok <- reconnect_step(state, :activate, fn -> activate_socket(socket) end) do
+      state =
+        Map.merge(state, %{
+          token: token,
+          socket: socket,
+          reconnect_failures: 0,
+          last_reconnect_attempt: nil
+        })
+
       ConnectionDiagnostics.emit(state, :reconnect_ok)
       {:noreply, schedule_ping(state)}
     else
       _ ->
-        {:noreply, schedule_reconnect(state)}
+        failed = Map.update(state, :reconnect_failures, 1, &min(&1 + 1, 5))
+        {:noreply, schedule_reconnect(failed)}
     end
   end
 
@@ -275,6 +324,17 @@ defmodule ChatchatClient do
       kind, reason ->
         ConnectionDiagnostics.emit(state, {:reconnect_failed, stage})
         :erlang.raise(kind, reason, __STACKTRACE__)
+    end
+  end
+
+  defp activate_socket(socket) do
+    case Socket.activate(socket) do
+      :ok ->
+        :ok
+
+      error ->
+        Socket.close(socket)
+        error
     end
   end
 
@@ -403,6 +463,11 @@ defmodule ChatchatClient do
     end
   end
 
+  # Lease loss is transient. Reconnect with the same outbox rather than keeping
+  # automatic retries suspended after a successful new authentication.
+  def handle_response(_socket, %{"type" => "error", "error" => "presence_unavailable"}, state),
+    do: {:error, :presence_unavailable, state}
+
   def handle_response(_socket, %{"type" => "error", "error" => reason}, state) do
     reason =
       if is_binary(reason) and byte_size(reason) <= 128, do: reason, else: "invalid_response"
@@ -459,7 +524,13 @@ defmodule ChatchatClient do
   end
 
   defp schedule_reconnect(%{reconnect_timer: nil} = state) do
-    %{state | reconnect_timer: Process.send_after(self(), :reconnect, @reconnect_interval)}
+    generation = make_ref()
+    delay = ChatchatClient.ReconnectBackoff.delay(Map.get(state, :reconnect_failures, 0))
+
+    Map.merge(state, %{
+      reconnect_timer: Process.send_after(self(), {:reconnect, generation}, delay),
+      reconnect_generation: generation
+    })
   end
 
   defp schedule_reconnect(state), do: state

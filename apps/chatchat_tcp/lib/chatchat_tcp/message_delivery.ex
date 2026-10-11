@@ -598,7 +598,6 @@ defmodule ChatchatTcp.MessageDelivery do
 
   defp start_job(reference, attempt, state) do
     parent = self()
-    remaining = min(5_000, max(attempt.deadline - now(), 1))
     phase = attempt.phase
     Diagnostics.elapsed(attempt.queued_at, :queue, phase, :dispatched)
     submitted_at = Diagnostics.now()
@@ -614,14 +613,14 @@ defmodule ChatchatTcp.MessageDelivery do
           :fallback ->
             result =
               Diagnostics.measure(:persist, :fallback, fn ->
-                MessagesStore.insert_pending(
+                MessagesStore.insert_pending_before(
                   %{
                     sender_id: attempt.sender_id,
                     message_id: attempt.id,
                     receiver_id: attempt.receiver,
                     payload: attempt.message
                   },
-                  remaining
+                  attempt.deadline
                 )
               end)
 

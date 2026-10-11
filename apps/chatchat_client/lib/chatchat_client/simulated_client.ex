@@ -2,7 +2,6 @@ defmodule ChatchatClient.SimulatedClient do
   use GenServer
 
   @tick_interval 1_000
-  @restart_interval 1_000
 
   def start_link(options), do: GenServer.start_link(__MODULE__, options)
 
@@ -21,7 +20,11 @@ defmodule ChatchatClient.SimulatedClient do
         client: nil,
         monitor: nil,
         announced_ready: false,
-        activity_started: false
+        activity_started: false,
+        restart_timer: nil,
+        restart_generation: nil,
+        restart_failures: 0,
+        last_start_attempt: nil
       })
 
     {:ok, state, {:continue, :start_client}}
@@ -31,7 +34,17 @@ defmodule ChatchatClient.SimulatedClient do
   def handle_continue(:start_client, state), do: start_client(state)
 
   @impl true
-  def handle_info(:start_client, %{client: nil} = state), do: start_client(state)
+  def handle_info({:start_client, generation}, state) do
+    if Map.get(state, :restart_generation) == generation,
+      do: handle_info(:start_client, state),
+      else: {:noreply, state}
+  end
+
+  def handle_info(:start_client, %{client: nil} = state) do
+    if state.restart_timer, do: Process.cancel_timer(state.restart_timer)
+    start_client(%{state | restart_timer: nil, restart_generation: nil})
+  end
+
   def handle_info(:start_client, state), do: {:noreply, state}
 
   def handle_info(:start_activity, %{activity_started: false} = state) do
@@ -59,9 +72,19 @@ defmodule ChatchatClient.SimulatedClient do
     {:noreply, state}
   end
 
+  def handle_info({:retry_interval, role, interval}, state) do
+    ChatchatClient.ConnectionDiagnostics.record_interval(state.connection_counts, role, interval)
+    {:noreply, state}
+  end
+
   def handle_info({:delivery_attempt, retry?}, state) when is_boolean(retry?) do
     :atomics.add(state.result_counts, 14, 1)
     if retry?, do: :atomics.add(state.result_counts, 15, 1)
+    {:noreply, state}
+  end
+
+  def handle_info({:delivery_queued, _id}, state) do
+    :atomics.add(state.result_counts, 1, 1)
     {:noreply, state}
   end
 
@@ -95,13 +118,15 @@ defmodule ChatchatClient.SimulatedClient do
         %{monitor: monitor, client: client} = state
       ) do
     :ets.delete(state.clients, state.index)
-    Process.send_after(self(), :start_client, @restart_interval)
-    {:noreply, %{state | client: nil, monitor: nil}}
+    {:noreply, schedule_start_client(%{state | client: nil, monitor: nil})}
   end
+
+  def handle_info({:DOWN, _reference, :process, _client, _reason}, state), do: {:noreply, state}
 
   @impl true
   def terminate(_reason, state) do
     :ets.delete(state.clients, state.index)
+    if state.restart_timer, do: Process.cancel_timer(state.restart_timer)
 
     if is_pid(state.client) and Process.alive?(state.client) do
       GenServer.stop(state.client)
@@ -111,6 +136,20 @@ defmodule ChatchatClient.SimulatedClient do
   end
 
   defp start_client(state) do
+    started = System.monotonic_time(:millisecond)
+
+    if previous = state.last_start_attempt do
+      ChatchatClient.ConnectionDiagnostics.emit_interval(
+        %{result_observer: self()},
+        :startup,
+        started - previous
+      )
+    end
+
+    do_start_client(%{state | last_start_attempt: started})
+  end
+
+  defp do_start_client(state) do
     client =
       if state.user_id do
         ChatchatClient.run_preprovisioned(state.username, state.user_id, result_observer: self())
@@ -124,8 +163,7 @@ defmodule ChatchatClient.SimulatedClient do
   rescue
     error ->
       send(state.simulator, {:client_start_failed, state.index, Exception.message(error)})
-      Process.send_after(self(), :start_client, @restart_interval)
-      {:noreply, state}
+      {:noreply, schedule_start_client(state)}
   end
 
   defp register_client(state, client) do
@@ -137,12 +175,34 @@ defmodule ChatchatClient.SimulatedClient do
       send(state.simulator, {:client_ready, state.index, self()})
     end
 
-    {:noreply, %{state | client: client, monitor: monitor, announced_ready: true}}
+    {:noreply,
+     %{
+       state
+       | client: client,
+         monitor: monitor,
+         announced_ready: true,
+         restart_failures: 0,
+         last_start_attempt: nil
+     }}
   rescue
     error ->
       GenServer.stop(client)
       reraise error, __STACKTRACE__
   end
+
+  defp schedule_start_client(%{restart_timer: nil} = state) do
+    generation = make_ref()
+    delay = ChatchatClient.ReconnectBackoff.delay(state.restart_failures)
+
+    %{
+      state
+      | restart_timer: Process.send_after(self(), {:start_client, generation}, delay),
+        restart_generation: generation,
+        restart_failures: min(state.restart_failures + 1, 5)
+    }
+  end
+
+  defp schedule_start_client(state), do: state
 
   defp send_message(state) do
     case random_recipient(state, 3) do
@@ -151,8 +211,7 @@ defmodule ChatchatClient.SimulatedClient do
 
       recipient ->
         result = submit_message(state, recipient)
-        index = if match?({:ok, _message_id}, result), do: 1, else: 5
-        :atomics.add(state.result_counts, index, 1)
+        unless match?({:ok, _message_id}, result), do: :atomics.add(state.result_counts, 5, 1)
         result
     end
   end

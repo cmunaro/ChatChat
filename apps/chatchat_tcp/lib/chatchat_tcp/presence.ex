@@ -1,8 +1,7 @@
 defmodule ChatchatTcp.Presence do
-  alias ChatchatTcp.{PresenceRouting, RedisKeys, RedisScript}
+  alias ChatchatTcp.{PresenceRouting, PresenceRedis, RedisKeys, RedisScript}
   alias ChatchatTcp.Presence.Registry, as: PresenceRegistry
 
-  @redis ChatchatTcp.Redis
   @script_path Application.app_dir(:chatchat_tcp, "priv/redis/presence_session.lua")
   @external_resource @script_path
   @script File.read!(@script_path)
@@ -75,20 +74,41 @@ defmodule ChatchatTcp.Presence do
       PresenceRouting.heartbeat_ttl()
     ]
 
-    RedisScript.command(@redis, @script, @sha, command)
+    role = if operation == :renew, do: :renewal, else: :session
+
+    PresenceRedis.run(role, user_id, fn connection, deadline ->
+      RedisScript.command(connection, @script, @sha, command, deadline)
+    end)
   end
 
   @doc "Resolves Redis hints only against this node and trusted connected nodes."
   def route(user_id) when is_integer(user_id) and user_id > 0 do
-    with {:ok, encoded} when is_binary(encoded) <-
-           Redix.command(@redis, ["GET", RedisKeys.presence_route(user_id)]),
-         {:ok, %{"node" => name, "owner" => owner, "session" => session}} <- Jason.decode(encoded),
-         true <- is_binary(owner) and is_binary(session),
-         {:ok, ^session} <- Ecto.UUID.cast(session),
-         {:ok, 1} <- Redix.command(@redis, ["EXISTS", RedisKeys.presence_node(owner)]),
-         {:ok, destination} <- trusted_node(name) do
-      {:ok, %{node: destination, owner: owner, session: session}}
-    else
+    PresenceRedis.run(:session, user_id, fn connection, deadline ->
+      with {:ok, encoded} when is_binary(encoded) <-
+             RedisScript.command_before(
+               connection,
+               ["GET", RedisKeys.presence_route(user_id)],
+               deadline
+             ),
+           {:ok, %{"node" => name, "owner" => owner, "session" => session}} <-
+             Jason.decode(encoded),
+           true <- is_binary(owner) and is_binary(session),
+           {:ok, ^session} <- Ecto.UUID.cast(session),
+           {:ok, 1} <-
+             RedisScript.command_before(
+               connection,
+               ["EXISTS", RedisKeys.presence_node(owner)],
+               deadline
+             ),
+           {:ok, destination} <- trusted_node(name) do
+        {:ok, %{node: destination, owner: owner, session: session}}
+      else
+        {:error, %Redix.ConnectionError{} = reason} -> {:error, reason}
+        _ -> {:error, :unavailable}
+      end
+    end)
+    |> case do
+      {:ok, route} -> {:ok, route}
       _ -> {:error, :unavailable}
     end
   end

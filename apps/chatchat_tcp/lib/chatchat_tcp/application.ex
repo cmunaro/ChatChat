@@ -15,7 +15,7 @@ defmodule ChatchatTcp.Application do
            [name: ChatchatTcp.ClusterSupervisor]
          ]},
         {Registry, keys: :unique, name: ChatchatTcp.Presence.Registry},
-        redis_child(ChatchatTcp.Redis),
+        ChatchatTcp.PresenceRedis,
         ChatchatTcp.PresenceRouting,
         {ChatchatTcp.DeliverySupervisor, tcp_options}
       ] ++ metrics_children()
@@ -41,10 +41,5 @@ defmodule ChatchatTcp.Application do
          startup_log: false}
       ]
     end
-  end
-
-  defp redis_child(name) do
-    options = {Application.fetch_env!(:chatchat_tcp, :redis_url), name: name}
-    Supervisor.child_spec({Redix, options}, id: name)
   end
 end

@@ -134,7 +134,10 @@ Frame limits include JSON escaping and envelope fields. Sender identity comes fr
 
 Admission reserves capacity **before payload enqueue**. Queued frames keep permits until
 consumed/discarded or the handler dies. Running writes keep reservations until exit;
-confirmed late commits still wake inbox recovery. Delivery supervision restarts producers
+confirmed late commits still wake inbox recovery. Persistence uses one absolute deadline
+checked inside the worker and before each write/query; a busy database pool refuses
+checkout instead of retaining an expired waiter. Unconfirmed outcomes stay retryable,
+and commit acknowledgement precedes Redis wakeup. Delivery supervision restarts producers
 and coordinators together to preserve budgets.
 
 Deployment: [TCP load balancing](README.md#tcp-load-balancing).

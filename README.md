@@ -53,13 +53,23 @@ docker compose up -d --scale tcp=4
 | Balancing | Fewest active connections; `/metrics` health checks |
 | Discovery | Docker DNS; `libcluster` DNSPoll |
 | Node names | `chatchat_tcp@<container-address>` |
-| Presence | One connection/user; lease 30s, renewal 10s |
+| Presence | One connection/user; lease 30s, renewal jittered 8–12s |
 | Distribution ports | 4369 / 9100, private network only |
 
 BEAM distribution uses the shared cookie and is **unencrypted by default**. Keep replicas on
 a trusted private network. Across untrusted networks, configure `-proto_dist inet_tls` and
 `-ssl_dist_optfile` with peer verification. Never expose distribution ports or log cookies.
 Single-node Mix development needs no discovery setup.
+
+Each TCP node uses a dedicated Redis heartbeat connection and four user-sharded
+session/route lanes plus four separate renewal lanes. Each lane reserves at most
+512 operations before mailbox submission, with a shared five-second queue/command
+budget. Overload fails closed; command timeouts restart only the affected lane to
+discard pending Redis work. Lua owner/session checks and lease expiry are unchanged.
+Redis metrics use fixed `heartbeat`, `session` and `renewal` role labels; capture
+also records lane mailbox lengths and reserved slots. These limits are independent
+of message admission budgets.
+
 
 ## Admin & monitoring
 
@@ -230,3 +240,15 @@ Two-node discovery check:
 ```sh
 MIX_ENV=test elixir --name chatchat_check@127.0.0.1 -S mix run --no-start scripts/check_tcp_cluster.exs
 ```
+
+Mock-client reconnect and wrapper startup retries use exponential backoff with
+jitter: 0.8–1 second initially, capped at 24–30 seconds between attempts after
+repeated failures, plus the bounded connect/authenticate time. Successful
+authentication resets the backoff. Only the live client reconnects; the wrapper
+recreates it after process death. Socket reconnect retains outbox identities and
+inbox deduplication; process death still clears in-memory stores. Status includes
+bounded aggregate histograms of actual retry intervals for both owners.
+
+A transient server `presence_unavailable` response reconnects with pending
+messages eligible for retry. Malformed protocol responses still suspend retries
+until explicit resume; successful authentication does not clear that safety hold.

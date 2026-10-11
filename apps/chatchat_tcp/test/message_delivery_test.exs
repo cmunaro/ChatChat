@@ -69,7 +69,10 @@ defmodule ChatchatTcp.MessageDeliveryTest do
     assert Repo.get_by(Message, sender_id: sender.id, message_id: request.message_id) == nil
 
     assert {:ok, nil} =
-             Redix.command(ChatchatTcp.Redis, ["GET", "chatchat:message:#{request.message_id}"])
+             Redix.command(ChatchatTcp.Redis.Heartbeat, [
+               "GET",
+               "chatchat:message:#{request.message_id}"
+             ])
 
     eventually(fn -> MessageDelivery.metric_snapshot().attempts == 0 end)
     assert_stage(:queue, :dispatched)
@@ -409,6 +412,156 @@ defmodule ChatchatTcp.MessageDeliveryTest do
 
     eventually(fn -> MessageDelivery.metric_snapshot().attempts == 0 end)
     assert {:error, :timeout} = :gen_tcp.recv(from, 0, 50)
+  end
+
+  test "worker scheduling past the sender deadline never starts a persistence write", %{
+    sender: sender,
+    receiver: receiver
+  } do
+    from = connect(sender.id)
+    request = request(receiver.id)
+    pause_stages([{:route, :routing, :error}, {:schedule, :fallback, :started}])
+    send_json(from, request)
+    assert_receive {:paused_stage, routing, :route}
+
+    {reference, _} =
+      Enum.find(:sys.get_state(MessageDelivery).attempts, fn {_, attempt} ->
+        attempt.id == request.message_id
+      end)
+
+    :sys.replace_state(MessageDelivery, fn state ->
+      attempt = state.attempts[reference]
+      Process.cancel_timer(attempt.result_timer)
+
+      attempt = %{
+        attempt
+        | deadline: System.monotonic_time(:millisecond) + 300,
+          result_timer: Process.send_after(MessageDelivery, {:deadline, reference}, 300)
+      }
+
+      %{state | attempts: Map.put(state.attempts, reference, attempt)}
+    end)
+
+    send(routing, :continue)
+    assert_receive {:paused_stage, worker, :schedule}
+    Process.sleep(350)
+    send(worker, :continue)
+    assert {:ok, %{"status" => "failed"}} = recv(from)
+    eventually(fn -> MessageDelivery.metric_snapshot().attempts == 0 end)
+    assert Repo.get_by(Message, sender_id: sender.id, message_id: request.message_id) == nil
+  end
+
+  test "confirmed late commit remains recoverable when the sender sees failure", %{
+    sender: sender,
+    receiver: receiver
+  } do
+    from = connect(sender.id)
+    request = request(receiver.id)
+    pause_stages([{:persist, :fallback, :ok}])
+    send_json(from, request)
+    assert_receive {:paused_stage, worker, :persist}
+
+    {reference, _} =
+      Enum.find(:sys.get_state(MessageDelivery).attempts, fn {_, attempt} ->
+        attempt.id == request.message_id
+      end)
+
+    :sys.replace_state(MessageDelivery, fn state ->
+      attempt = state.attempts[reference]
+      Process.cancel_timer(attempt.result_timer)
+
+      %{
+        state
+        | attempts:
+            Map.put(state.attempts, reference, %{
+              attempt
+              | deadline: System.monotonic_time(:millisecond) - 1,
+                result_timer: nil
+            })
+      }
+    end)
+
+    send(MessageDelivery, {:deadline, reference})
+    assert {:ok, %{"status" => "failed"}} = recv(from)
+    original = Repo.get_by!(Message, sender_id: sender.id, message_id: request.message_id)
+    send(worker, :continue)
+    eventually(fn -> MessageDelivery.metric_snapshot().attempts == 0 end)
+    # Disable the pause before replaying the same immutable identity.
+    :telemetry.detach({__MODULE__, :pause, self()})
+    send_json(from, %{request | request_id: Ecto.UUID.generate()})
+    assert {:ok, %{"status" => "ok"}} = recv(from)
+    assert original == Repo.get_by!(Message, sender_id: sender.id, message_id: request.message_id)
+    to = connect(receiver.id)
+    assert {:ok, frame} = recv(to)
+    acknowledge(to, frame)
+
+    eventually(fn ->
+      Repo.get_by(Message, sender_id: sender.id, message_id: request.message_id) == nil
+    end)
+  end
+
+  test "commit acknowledgement precedes a delayed failed Redis wakeup", %{
+    sender: sender,
+    receiver: receiver
+  } do
+    from = connect(sender.id)
+    request = request(receiver.id)
+    pause_stages([{:persist, :fallback, :ok}])
+    send_json(from, request)
+    assert_receive {:paused_stage, worker, :persist}
+    lane = ChatchatTcp.PresenceRedis.lane(:session, receiver.id)
+    :sys.suspend(lane)
+
+    try do
+      send(worker, :continue)
+      assert {:ok, %{"status" => "ok"}} = recv(from)
+      assert Repo.get_by(Message, sender_id: sender.id, message_id: request.message_id)
+      assert map_size(:sys.get_state(MessageDelivery).jobs) > 0
+      Process.sleep(ChatchatTcp.PresenceRedis.Lane.timeout() + 20)
+    after
+      :sys.resume(lane)
+    end
+
+    eventually(fn -> MessageDelivery.metric_snapshot().attempts == 0 end)
+    assert Repo.get_by(Message, sender_id: sender.id, message_id: request.message_id)
+    :telemetry.detach({__MODULE__, :pause, self()})
+    to = connect(receiver.id)
+    assert {:ok, frame} = recv(to)
+    acknowledge(to, frame)
+
+    eventually(fn ->
+      Repo.get_by(Message, sender_id: sender.id, message_id: request.message_id) == nil
+    end)
+  end
+
+  def pause_stage(
+        _event,
+        _measurements,
+        %{stage: stage, phase: phase, outcome: outcome},
+        {owner, wanted}
+      ) do
+    if {stage, phase, outcome} in wanted do
+      send(owner, {:paused_stage, self(), stage})
+
+      receive do
+        :continue -> :ok
+      after
+        2_000 -> :ok
+      end
+    end
+  end
+
+  defp pause_stages(wanted) do
+    id = {__MODULE__, :pause, self()}
+
+    :telemetry.attach(
+      id,
+      [:chatchat, :delivery, :stage],
+      &__MODULE__.pause_stage/4,
+      {self(), wanted}
+    )
+
+    on_exit(fn -> :telemetry.detach(id) end)
   end
 
   test "reconnected session cannot ACK an old stored receipt", %{

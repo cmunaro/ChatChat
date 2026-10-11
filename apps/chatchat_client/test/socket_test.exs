@@ -193,6 +193,23 @@ defmodule ChatchatClient.SocketTest do
     assert Store.inbox(state.store) == [[1, id, "hello", "2026-10-09T10:00:00Z"]]
   end
 
+  test "transient presence errors during a request preserve retry state and existing safety holds" do
+    {client, server} = connected_sockets()
+    {:ok, _id, store} = Store.put_outbox(Store.new(2), 1, "retained")
+    state = %{state() | store: store}
+    frame = Jason.encode!(%{type: "error", error: "presence_unavailable"})
+    :ok = Socket.activate(client)
+    :ok = :gen_tcp.send(server, frame <> "\n")
+
+    assert {:error, :presence_unavailable, ^state} =
+             Socket.request(client, %{type: "ping"}, &(&1["type"] == "pong"), state)
+
+    assert length(Store.pending(state.store)) == 1
+    held = %{state | store: Store.suspend(state.store, "invalid_response")}
+    assert {:error, :presence_unavailable, ^held} = Socket.handle_incoming(client, frame, held)
+    assert Store.pending(held.store) == []
+  end
+
   test "uncorrelated and malformed responses suspend automatic retries" do
     {client, _server} = connected_sockets()
     {:ok, _id, store} = Store.put_outbox(Store.new(2), 1, "retained")

@@ -98,6 +98,129 @@ defmodule ChatchatBroker.Storage.MessagesStoreTest do
     end
   end
 
+  test "expired persistence budget never starts a write", %{message: message} do
+    assert {:error, :deadline} =
+             MessagesStore.insert_pending_before(message, System.monotonic_time(:millisecond) - 1)
+
+    assert Repo.get_by(Message, sender_id: message.sender_id, message_id: message.message_id) ==
+             nil
+  end
+
+  test "busy pool refuses checkout immediately and the same identity succeeds after release" do
+    with_budget_repo(1, fn repo, message ->
+      parent = self()
+
+      lock =
+        Task.async(fn ->
+          Repo.put_dynamic_repo(repo)
+
+          Repo.checkout(fn ->
+            send(parent, :pool_owned)
+
+            receive do
+              :release -> :ok
+            after
+              2_000 -> :ok
+            end
+          end)
+        end)
+
+      assert_receive :pool_owned
+      started = System.monotonic_time(:millisecond)
+
+      try do
+        assert {:error, :unavailable} = MessagesStore.insert_pending_before(message, started + 30)
+        assert System.monotonic_time(:millisecond) - started < 500
+      after
+        send(lock.pid, :release)
+        Task.await(lock)
+      end
+
+      assert Repo.get_by(Message, sender_id: message.sender_id, message_id: message.message_id) ==
+               nil
+
+      assert {:ok, first} = MessagesStore.insert_pending(message)
+      assert {:ok, ^first} = MessagesStore.insert_pending(message)
+    end)
+  end
+
+  @tag capture_log: true
+  test "statement timeout rolls back unconfirmed work and leaves retry identity usable" do
+    with_budget_repo(2, fn repo, message ->
+      parent = self()
+
+      lock =
+        Task.async(fn ->
+          Repo.put_dynamic_repo(repo)
+
+          Repo.transaction(fn ->
+            Ecto.Adapters.SQL.query!(repo, "LOCK TABLE messages IN SHARE MODE", [])
+            send(parent, :table_locked)
+
+            receive do
+              :release -> :ok
+            after
+              2_000 -> :ok
+            end
+          end)
+        end)
+
+      assert_receive :table_locked
+
+      try do
+        assert {:error, reason} =
+                 MessagesStore.insert_pending_before(
+                   message,
+                   System.monotonic_time(:millisecond) + 30
+                 )
+
+        assert reason in [:unavailable, :deadline]
+      after
+        send(lock.pid, :release)
+        Task.await(lock)
+      end
+
+      assert Repo.get_by(Message, sender_id: message.sender_id, message_id: message.message_id) ==
+               nil
+
+      assert {:ok, _} = MessagesStore.insert_pending(message)
+    end)
+  end
+
+  defp with_budget_repo(size, operation) do
+    # These tests exercise real pool ownership and commits. Release the setup
+    # sandbox transaction so its table locks cannot obstruct the test lock.
+    Ecto.Adapters.SQL.Sandbox.checkin(Repo)
+
+    repo =
+      start_supervised!(
+        {Repo, name: __MODULE__.BudgetRepo, pool: DBConnection.ConnectionPool, pool_size: size}
+      )
+
+    previous = Repo.put_dynamic_repo(repo)
+
+    users =
+      for _ <- 1..2,
+          do: Repo.insert!(%User{username: Ecto.UUID.generate(), password_hash: "unused"})
+
+    [sender, receiver] = users
+
+    message = %{
+      sender_id: sender.id,
+      receiver_id: receiver.id,
+      message_id: Ecto.UUID.generate(),
+      payload: "budget"
+    }
+
+    try do
+      operation.(repo, message)
+    after
+      Repo.delete_all(from m in Message, where: m.sender_id == ^sender.id)
+      Enum.each(users, &Repo.delete!/1)
+      Repo.put_dynamic_repo(previous)
+    end
+  end
+
   test "independent concurrent transactions confirm one committed row" do
     Ecto.Adapters.SQL.Sandbox.unboxed_run(Repo, fn ->
       sender = Repo.insert!(%User{username: Ecto.UUID.generate(), password_hash: "unused"})

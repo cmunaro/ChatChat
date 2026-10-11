@@ -33,6 +33,8 @@ services:
       DATABASE_URL: ecto://chatchat:chatchat@postgres/chatchat_baseline
       ERL_AFLAGS: '+S 1:1 +SDcpu 1 +SDio 1'
   haproxy:
+    volumes: !override
+      - '${BASELINE_HAPROXY_CONFIG:-./observability/haproxy.cfg}:/usr/local/etc/haproxy/haproxy.cfg:ro'
     cpuset: '7'
     cpus: 1
     mem_limit: 2g
