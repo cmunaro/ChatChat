@@ -138,6 +138,12 @@ def traffic_stop(sample, requested):
     sockets = authenticated(sample)
     if len(states) != 2 or sockets is None or sockets < requested * .999:
         return True
+    stats = sample["probes"].get("docker_stats", {})
+    if stats.get("status") == "ok":
+        for line in stats["data"].splitlines():
+            row = json.loads(line)
+            if float(row.get("MemPerc", "0%").rstrip("%")) >= 90:
+                return True
     outstanding = sum(s["queued_messages"] - s["unique_confirmed_messages"] for s in states)
     return outstanding > max(100, requested * .01)
 
@@ -206,6 +212,51 @@ def stable(samples, requested):
         s["connection_diagnostics"]["reconnects"]["failed"] == 0 for s in states)
 
 
+def traffic_result(samples, requested, duration):
+    """Evaluate the post-warmup interval; cumulative earlier traffic is excluded."""
+    times = [datetime.fromisoformat(s["timestamp"]).timestamp() for s in samples]
+    window = [s for s, t in zip(samples, times) if t - times[0] >= 30] if times else []
+    result = {"accepted": False}
+    if len(window) < 6 or any(len(clients(s)) != 2 or any("confirmation_latency_ms" not in state for state in clients(s)) for s in window):
+        return result
+    first, last = clients(window[0]), clients(window[-1])
+    elapsed = datetime.fromisoformat(window[-1]["timestamp"]).timestamp() - datetime.fromisoformat(window[0]["timestamp"]).timestamp()
+    confirmed = sum(s["unique_confirmed_messages"] for s in last) - sum(s["unique_confirmed_messages"] for s in first)
+    outstanding = [sum(s["queued_messages"] - s["unique_confirmed_messages"] for s in clients(row)) for row in window]
+    buckets = {limit: sum(s["confirmation_latency_ms"]["buckets"][str(limit)] for s in last) -
+               sum(s["confirmation_latency_ms"]["buckets"][str(limit)] for s in first)
+               for limit in (10, 50, 100, 500, 1000, 10000)}
+    p95 = next((limit for limit, count in buckets.items() if confirmed > 0 and count >= confirmed * .95), None)
+    slope = (outstanding[-1] - outstanding[0]) / elapsed if elapsed > 0 else None
+    complete = times[-1] - times[0] >= duration - 20
+    fresh = all(authenticated(s) is not None and authenticated(s) >= requested * .999 for s in window)
+    gaps = any(b - a > 30 for a, b in zip(times, times[1:]))
+    result.update(confirmation_rate=confirmed / elapsed if elapsed > 0 else None,
+                  p95_upper_ms=p95, backlog_slope_per_second=slope,
+                  outstanding=outstanding[-1], peak_outstanding=max(outstanding),
+                  full_duration=complete, fresh_sockets=fresh, observation_gap=gaps)
+    result["accepted"] = (complete and fresh and not gaps and not any(traffic_stop(s, requested) for s in window)
+                          and p95 is not None and p95 <= 100
+                          and slope is not None and slope <= 1 and outstanding[-1] <= 100)
+    return result
+
+
+def reconciliation(directory, samples, requested):
+    scans = json.loads((directory / "outboxes.json").read_text())["shards"]
+    pending = json.loads((directory / "postgres-pending.json").read_text())
+    states = clients(samples[-1]) if samples else []
+    valid = len(states) == 2 and len(scans) == 2 and all(
+        row.get("available", True) and row.get("unavailable") == 0 and row.get("unscanned") == 0
+        and row.get("outbox") == 0 and row.get("inflight") == 0 for row in scans.values())
+    valid = valid and sum(row.get("observed", 0) for row in scans.values()) == requested
+    queued = sum(s["queued_messages"] for s in states)
+    confirmed = sum(s["unique_confirmed_messages"] for s in states)
+    inbox = sum(row.get("inbox", 0) for row in scans.values())
+    return {"complete": valid and pending.get("rows") == 0 and queued == confirmed == inbox,
+            "admitted": queued, "confirmed": confirmed, "inbox": inbox,
+            "postgres_pending": pending, "scans": scans}
+
+
 def set_traffic(args, probability, start=False):
     for container in args.loadgen_container:
         rpc(container, RPC_PREFIX + f''' :ok = ChatchatClient.set_simulation_send_probability(s.simulation, {probability});
@@ -218,6 +269,8 @@ def main():
     parser.add_argument("--steps", type=int, nargs="+", default=[10000, 20000, 40000, 80000])
     parser.add_argument("--hold", type=int, default=120)
     parser.add_argument("--traffic", type=float, nargs="+", default=[.01, .05, .10, .20])
+    parser.add_argument("--traffic-hold", type=int, default=None, help="traffic-step duration; defaults to --hold")
+    parser.add_argument("--soak", type=int, default=0, help="soak highest accepted rate after ramp (seconds)")
     parser.add_argument("--build", action="store_true")
     parser.add_argument("--proxy-threads", type=int, choices=[1, 2], default=2)
     parser.add_argument("--backend-outage", action="store_true",
@@ -228,6 +281,9 @@ def main():
     opts = parser.parse_args()
     if opts.hold < 90 or any(n <= 0 or n > 80000 or n % 2 for n in opts.steps) or opts.steps != sorted(set(opts.steps)) or any(p <= 0 or p > 1 for p in opts.traffic) or opts.traffic != sorted(set(opts.traffic)):
         parser.error("hold >=90s; ascending even steps <=80000; traffic probabilities (0,1]")
+    if (opts.traffic_hold is not None and opts.traffic_hold < 90) or (opts.soak != 0 and opts.soak < 90):
+        parser.error("traffic-hold and nonzero soak must be >=90s")
+    traffic_duration = opts.traffic_hold or opts.hold
     # Refuse overlapping workloads, including other Compose projects.
     if command(["docker", "ps", "-q"]):
         raise RuntimeError("baseline requires no running containers; stop unrelated workloads explicitly")
@@ -242,6 +298,13 @@ def main():
     configuration.write_text(proxy_config(opts.proxy_threads))
     env = dict(os.environ, TCP_CLUSTER_COOKIE=secrets.token_hex(32),
                BASELINE_HAPROXY_CONFIG=str(configuration))
+    (opts.output / "plan.json").write_text(json.dumps({
+        "steps": opts.steps, "probabilities": opts.traffic, "connection_hold_seconds": opts.hold,
+        "traffic_hold_seconds": traffic_duration, "soak_seconds": opts.soak,
+        "drain_seconds": 120, "p95_upper_ms": 100, "max_final_outstanding": 100,
+        "max_backlog_slope_per_second": 1, "safety_outstanding": "max(100, population * .01)",
+        "max_observation_gap_seconds": 30, "min_offered_rate_fraction": .95,
+        "safety_memory_percent": 90}, indent=2) + "\n")
     results = []
     try:
         if opts.build:
@@ -286,16 +349,36 @@ def main():
                 held, _ = phase(args, opts.output, "traffic-connections", opts.hold, largest) if ready else ([], False)
                 if not ready or not stable(held, largest):
                     raise RuntimeError("largest stable connection step could not be reproduced")
+            chosen = None
             for index, probability in enumerate(opts.traffic):
                 set_traffic(args, probability, start=index == 0)
-                samples, _ = phase(args, opts.output, f"traffic-{probability}", opts.hold, largest, traffic=True, population=False)
-                states = clients(samples[-1])
-                outstanding = sum(s["queued_messages"] - s["unique_confirmed_messages"] for s in states) if len(states) == 2 else None
-                results.append({"probability": probability, "outstanding": outstanding, "fresh_sockets": authenticated(samples[-1])})
-                if traffic_stop(samples[-1], largest):
+                samples, _ = phase(args, opts.output, f"traffic-{probability}", traffic_duration, largest, traffic=True, population=False)
+                assessment = traffic_result(samples, largest, traffic_duration)
+                assessment["offered_rate"] = largest * probability
+                assessment["accepted"] = assessment["accepted"] and assessment.get("confirmation_rate", 0) >= largest * probability * .95
+                results.append({"probability": probability, **assessment})
+                set_traffic(args, 0.0)
+                drain_label = f"drain-{probability}"
+                drained, _ = phase(args, opts.output, drain_label, 120, largest)
+                assessment["reconciliation"] = reconciliation(opts.output / drain_label, drained, largest)
+                results[-1].update(assessment)
+                if not assessment["reconciliation"]["complete"]:
+                    raise RuntimeError("traffic step did not fully reconcile within drain deadline")
+                if not assessment["accepted"]:
                     break
-            set_traffic(args, 0.0)
-            phase(args, opts.output, "drain", 120, largest)
+                chosen = probability
+            if opts.soak and chosen is not None:
+                set_traffic(args, chosen)
+                samples, _ = phase(args, opts.output, "soak", opts.soak, largest, traffic=True, population=False)
+                assessment = traffic_result(samples, largest, opts.soak)
+                assessment["offered_rate"] = largest * chosen
+                assessment["accepted"] = assessment["accepted"] and assessment.get("confirmation_rate", 0) >= largest * chosen * .95
+                results.append({"soak_probability": chosen, **assessment})
+                set_traffic(args, 0.0)
+                drained, _ = phase(args, opts.output, "soak-drain", 120, largest)
+                results[-1]["reconciliation"] = reconciliation(opts.output / "soak-drain", drained, largest)
+                if not results[-1]["reconciliation"]["complete"]:
+                    raise RuntimeError("soak did not fully reconcile within drain deadline")
             if opts.backend_outage:
                 set_traffic(args, .01)
                 node = args.tcp_container[0]

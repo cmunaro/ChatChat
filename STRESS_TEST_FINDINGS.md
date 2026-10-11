@@ -918,3 +918,116 @@ a production SLA or a new throughput ceiling. Tasks 11–12 retain longer-soak,
 intermediate throughput and storage/process/multi-node failure scope. Standalone
 clients do not acquire a simulator-wide limit; client-process death still loses
 in-memory stores. Failed experiments above remain explicit.
+
+
+## Task 11 bounded throughput and duration trials (2026-10-11 UTC)
+
+Task 11 is **complete for the selected 1,200/s operating point at 80k users for
+five minutes**, at the recorded fixed resources. The user revised acceptance from
+15 minutes to five minutes and scoped reconciliation to accepted runs. The saved
+300-second run passes; no additional load run was performed. The failed 1,600/s
+population remains unreconciled, and the original 15-minute trial failed its memory
+safety criterion. No application limits or behavior changed.
+Evidence is `/tmp/chatchat-task11-throughput-20261011/` and
+`/tmp/chatchat-task11-soak-20261011/`. Both used 80,000 users, two generators,
+two TCP nodes, two proxy threads, unchanged resource allocations, 128-byte
+payloads, uniform shard-local receiver selection and zero intentional disconnects.
+Current releases were rebuilt for the first trial from commit `7d3a58c`; every
+image ID and resource limit matched between these two trials. Resource limits
+also matched task 10, but rebuilt release image IDs differed from that older run.
+CPU sets isolate roles inside the Docker guest, not from physical-host contention.
+
+The pre-run plan declared nominal 800/1,200/1,600/2,400/3,200/4,000/s steps,
+300-second holds, a 900-second soak of the highest passing rate, 240-second setup
+and 120-second connection hold/drain deadlines. The runner stopped the ramp on
+its first rejection. Acceptance required post-warmup confirmations ≥95% of the
+nominal rate, p95 ≤100 ms, final outstanding ≤100, endpoint backlog slope ≤1/s,
+fresh ≥99.9% sockets, full duration and no sample gap >30 seconds. Existing
+missing-counter/socket and outstanding >800 safety stops remained; sampled
+container memory ≥90% was an additional stop. CPU, memory and lane pressure were
+captured rather than increasing limits. Counter/histogram deltas exclude each
+phase's first 30 seconds and all previous traffic; p95 covers confirmed work only.
+
+| Trial | Requested hold | Measured confirmations/s | Confirmation p95 | Result |
+| --- | ---: | ---: | ---: | --- |
+| 800/s anchor | 300 s | 797.3 | ≤50 ms | Traffic gate and full reconciliation passed |
+| 1,200/s ramp | 300 s | 1,201.1 | ≤50 ms | Traffic gate and full reconciliation passed |
+| 1,600/s ramp | 300 s | Unavailable | Unavailable | Safety stop at about 32 s; drain failed |
+| Fresh 1,200/s duration trial | 900 s | 1,197.0 | ≤50 ms | Memory safety stop at about 13 minutes; full reconciliation passed |
+
+The 800/s hold had sampled backlog 0–133 and final outstanding 52; the 1,200/s
+hold had backlog 7–97 and final outstanding 14. Endpoint slopes were +0.20 and
+−0.07 identities/s, respectively; the complete series did not show accumulating
+work. TCP CPU peaks were 132%/122% and 141%/139% against 200% per-node quotas.
+Proxy CPU peaked at 36% and 80% against 100%; generator peaks remained below
+94% against 150% each. Session/renewal reservation peaks were 9/39 and 7/16,
+with a 512-per-lane bound. Redis mailbox peaks were 30 and 8; heartbeat mailboxes
+stayed zero. These samples support headroom during these holds, not all future
+loads. Five minutes satisfies the revised acceptance duration only.
+
+The first drain fully reconciled **239,604 admissions = confirmations = receiver
+inbox identities**; the second reconciled the cumulative **600,374**. Both scanned
+all 80k receivers with zero unavailable/unscanned, outbox, inflight and PostgreSQL
+pending counts. During the second drain, however, authenticated sockets briefly
+fell to 75,626 before recovering to 80k. Client counters recorded 4,362 peer closes
+and 12 ping failures; live server counters attributed 4,374 closures to presence
+unavailability. This zero-traffic incident prevents attributing the later failure
+exclusively to the higher offered rate.
+
+The 1,600/s step then fell to **3,706 authenticated sockets** at its stop sample;
+generator counters and a runtime probe became unavailable. Both TCP nodes logged
+eight presence-lane terminations classified as `redis_timeout`, one per lane.
+Container state checks found no OOM kills or container restarts. TCP, proxy and
+generator CPU samples reached their quotas during the incident. These identify
+shared Redis round-trip timeouts and reconnect pressure, but do not isolate Redis
+server execution, runtime scheduling or host contention as the initiating cause.
+The recorded sample intervals stayed below 30 seconds; individual probes were
+explicitly unavailable. Bounded failure headers are saved in `failure-events.json`.
+
+At the failed 120-second drain boundary, **651,875 admissions**, **646,836 sender
+confirmations**, and **635,561 observed receiver inbox identities** did not reconcile.
+PostgreSQL retained **3,722 rows**; scans reported **4,233 outbox entries**, **13
+inflight attempts**, **292 unavailable** and **733 unscanned** clients. Counts are
+non-atomic and overlapping; do not add them as independent lost-message totals.
+There were 5,039 unconfirmed admissions at the last counter observation. The
+runner saved this failure, skipped higher rates and its automatic soak, then
+cleaned up the dedicated test deployment. That cleanup deliberately discarded
+remaining test data; eventual delivery after this deadline is unproven.
+
+One final fresh, same-image run attempted only the 900-second 1,200/s hold to
+resolve duration without repeating the ramp. It kept all 80k sockets fresh,
+recorded no client disconnects/reconnect failures, averaged **7.36 ms** confirmation
+latency and kept p95 ≤50 ms. Post-warmup backlog peaked at 140 (185 including
+warmup) and ended at three, with endpoint
+slope −0.009/s. Session/renewal reservations peaked at 13/115; Redis mailboxes
+peaked at 4/91 with heartbeat zero. TCP CPU peaks were 132%/128%, proxy 59%, and
+generators below 77%. The stop was memory, not these throughput/latency measures:
+one generator reached **90.38% of 4 GiB**, the other 88.69%; TCP memory stayed
+below 78% of 8 GiB. Observations covered 780.24 seconds before the stop, so the
+planned 900-second duration **did not pass**.
+
+The simulator retains receiver inbox identities throughout a run. Accumulation
+coincided with generator memory growth, but a bounded 16-client-per-shard memory
+sample is not a full heap/allocator profile and does not prove the exclusive
+cause. Do not clear unverified stores or raise generator limits to hide this
+failed fixed-resource criterion. After drain, complete 80k scans reconciled
+**937,565 admissions = confirmations = receiver inbox identities**, with zero
+outbox, inflight, unavailable, unscanned and PostgreSQL pending counts. Both
+projects verified application cleanup `0|0|0` and removed containers/volumes.
+
+The runner now records a pre-run plan, separate traffic/soak durations,
+post-warmup acceptance gates and reconciliation after each drain. A failed drain
+prevents additional traffic; safety-stopped phases cannot pass, and reconciliation
+requires the expected receiver population. Executed runner copies are retained
+beside the raw artifacts; final gate hardening was also checked against saved
+samples. **15 capture and seven baseline Python tests passed**, including warmup
+exclusion, backlog/latency/duration/gap rejection, memory stops and incomplete
+receiver scans. Whitespace checks passed. Mix checks were not rerun because no
+Elixir code changed.
+
+Task 11 acceptance is limited to the demonstrated five-minute 1,200/s point.
+Longer duration below the generator-memory limit and attribution/retesting of the
+shared timeout incident with complete reconciliation remain unresolved limitations.
+The empirical 1,200/s-pass / 1,600/s-fail interval brackets these trials only; it is
+not a causal capacity ceiling or a production SLA. Rates above 1,600/s were not run.
+Task 12 remains separate.

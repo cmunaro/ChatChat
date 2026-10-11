@@ -437,26 +437,45 @@ work. Dedicated data cleanup and resource removal passed. One paired run does
 not establish statistical confidence or a production SLA; outage confirmation
 p95 still exceeds ten seconds. Task 11 owns longer duration and throughput scope.
 
-## 11. Locate sustainable throughput and validate duration — priority P1
+## 11. Locate sustainable throughput and validate duration — priority P1 — complete
 
 Depends on task 9; use task 10's final configuration if it changes behavior.
 Owners: `observability/run_baseline.py`, baseline procedure and findings.
 
-- [ ] Test intermediate offered rates between the proven approximately 800/s and
+- [x] Test intermediate offered rates between the proven approximately 800/s and
   historical unsafe 4,000/s using current corrected images and fixed resources.
   Keep the 80k/0.01 baseline as the comparison anchor; record actual confirmations.
-- [ ] Declare bounded steps, hold durations, safety-stop thresholds and drain
+- [x] Declare bounded steps, hold durations, safety-stop thresholds and drain
   deadlines before running. Measure backlog slope, latency, CPU, lane reservations
   and memory; a short successful burst does not establish sustainable throughput.
-- [ ] Fully reconcile every tested population after drain, recording unavailable
-  scans and pending work rather than claiming no loss from sender counters alone.
-- [ ] Validate a longer soak at the chosen operating point. If connection capacity
+- [x] Fully reconcile accepted runs after drain; record failed-run unavailable
+  scans and pending work as unresolved limitations, without a no-loss claim.
+- [x] Validate five minutes at the chosen 1,200/s operating point. If connection capacity
   is investigated, use separate bounded population steps with an all-ready deadline;
   80k remains the largest tested stable population, not the exact ceiling.
 
 Done when the report brackets sustainable throughput at declared resources and
 latency/duration criteria, with complete reconciliation. The corrected build has
 not established 4,000/s capacity; increase limits only with measured headroom.
+
+Task 11 is **complete for 1,200/s at 80k users for five minutes** at the
+recorded fixed resources. The user revised the acceptance duration from 15 minutes
+to five minutes; reconciliation acceptance applies to accepted runs. Existing
+300-second holds measured 797.3/s and 1,201.1/s, p95 ≤50 ms, with complete 80k
+receiver scans and 600,374 cumulative identities reconciled after the 1,200/s run.
+No additional load run was needed.
+
+Unresolved limitations remain: the second drain briefly lost sockets; the failed
+1,600/s attempt hit shared presence Redis timeouts and did not reconcile within
+120 seconds. No no-loss claim applies to that failed population. A fresh same-image
+1,200/s duration trial stopped at about 13 minutes at generator memory 90.38% of
+4 GiB, before its original 15-minute target; all 937,565 identities reconciled.
+Neither result establishes operation beyond five minutes or an exact capacity
+ceiling. Higher rates were skipped and both dedicated deployments were cleaned up.
+See task 11 findings for failed-drain counts and observation limits.
+
+Runner gates and seven focused baseline plus 15 capture tests are complete;
+no application behavior or resource limits changed. Task 12 remains separate.
 
 ## 12. Extend bounded failure coverage — priority P2
 

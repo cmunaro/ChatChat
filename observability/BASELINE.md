@@ -190,3 +190,64 @@ Histograms retain their count/sum and existing buckets, add 10/50/100/500-ms buc
 and have explicit overflow beyond 60 seconds. Hard client death cannot record a
 completed operation and still loses in-memory stores. New fields require rebuilt
 client images; do not treat missing fields as zero.
+
+Task 11 is complete at 1,200/s for five minutes with 80k users and fixed resources.
+The user revised the original 15-minute acceptance to five minutes, with complete
+reconciliation required for accepted runs. Reuse the saved passing evidence; no
+additional load run is required. The commands below record the original trials,
+not a requirement to repeat them. Neither trial injected outages:
+
+Original ramp procedure:
+
+```sh
+caffeinate -i python3 observability/run_baseline.py --build --steps 80000 \
+  --hold 120 --traffic-hold 300 --traffic .01 .015 .02 .03 .04 .05 \
+  --soak 900 --output /tmp/chatchat-task11-throughput-20261011
+```
+
+The nominal ramp is 800/1,200/1,600/2,400/3,200/4,000 messages/s; stop at the
+first rejected step. Each step drains for 120 seconds and must reconcile all
+admissions, confirmations and receiver inbox identities with complete population
+scans and zero outbox/inflight/PostgreSQL pending work before continuing. Soak
+the highest accepted rate for 900 seconds, then reconcile again. Setup and
+connection hold remain 240/120 seconds. Existing safety stops apply after the
+30-second warmup; sampled container memory at 90% also stops traffic. CPU,
+lane reservations and memory are captured for attribution, not increased.
+
+Acceptance uses post-warmup counter/histogram deltas: at least 95% of nominal
+rate confirmed, confirmation p95 ≤100 ms, final outstanding ≤100 identities,
+endpoint backlog slope ≤1 identity/s, fresh ≥99.9% sockets, full hold duration,
+and no capture gap >30 seconds. Review the complete backlog series as well as
+this endpoint slope. These are experimental duration/latency criteria, not a
+production SLA. A failed higher step brackets only the tested interval; if every
+step passes, report a lower bound rather than an exact ceiling. The pre-run
+`plan.json` records durations and criteria; `results.json` records rate gates and
+per-drain reconciliation. Missing evidence fails acceptance. Maximum traffic
+and soak time is 45 minutes plus bounded drains/setup/build, usually less because
+the ramp stops on its first failure.
+
+
+Task 11's initial ramp passed the five-minute 800/1,200/s traffic gates but stopped
+at 1,600/s after shared Redis timeouts; its drain did not fully reconcile. The
+runner saved the failure and cleaned up, discarding remaining dedicated test data.
+Do not infer eventual delivery or no loss for that unsafe population. No higher
+rates ran. A final fresh duration-only trial reused exactly the same images:
+
+```sh
+caffeinate -i python3 observability/run_baseline.py --steps 80000 --hold 120 \
+  --traffic-hold 900 --traffic .015 \
+  --output /tmp/chatchat-task11-soak-20261011
+```
+
+That trial stopped after about 13 minutes at generator memory 90.38%, retaining
+80k sockets, approximately 1,197 confirmations/s and p95 ≤50 ms. All 937,565
+identities reconciled after drain, but the 15-minute duration criterion failed.
+The saved 300-second 1,200/s ramp satisfies revised task 11 acceptance: 1,201.1
+confirmations/s, p95 ≤50 ms, fresh 80k sockets during traffic, and complete 80k
+receiver scans reconciling 600,374 cumulative identities. The second drain briefly
+dipped to 75,626 sockets before recovering. That incident, failed 1,600/s
+reconciliation and longer-run memory failure remain unresolved limitations; see
+the findings. Acceptance makes no claim beyond five minutes. Task 12 is separate. The executed runner is preserved in each
+artifact directory; subsequent gate hardening also rejects memory-stopped phases
+and requires the expected scan population. Neither trial establishes an exact
+capacity ceiling or authorizes increasing resource limits.
