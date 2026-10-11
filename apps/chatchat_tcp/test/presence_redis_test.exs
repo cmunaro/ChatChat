@@ -259,6 +259,32 @@ defmodule ChatchatTcp.PresenceRedisTest do
            }
   end
 
+  test "renewal retry backoff is bounded by the confirmed lease" do
+    deadline = System.monotonic_time(:millisecond) + 30_000
+
+    for {failures, base} <- [{0, 1_000}, {1, 2_000}, {2, 4_000}, {3, 4_000}] do
+      delay = PresenceRouting.retry_delay(deadline, failures)
+      assert delay >= base and delay <= div(base * 6, 5)
+    end
+
+    assert PresenceRouting.retry_delay(System.monotonic_time(:millisecond) + 100, 3) in 0..100
+    assert PresenceRouting.retry_delay(System.monotonic_time(:millisecond) - 1, 0) == 0
+  end
+
+  test "only bounded maintenance workers and connections receive high priority", %{user: user} do
+    assert Process.info(Process.whereis(PresenceRouting), :priority) == {:priority, :high}
+
+    for connection <- PresenceRedis.connections() do
+      expected = if PresenceRedis.role(connection) == :session, do: :normal, else: :high
+      assert Process.info(Process.whereis(connection), :priority) == {:priority, expected}
+    end
+
+    for {role, expected} <- [{:session, :normal}, {:renewal, :high}] do
+      lane = PresenceRedis.lane(role, user)
+      assert Process.info(Process.whereis(lane), :priority) == {:priority, expected}
+    end
+  end
+
   defp route do
     %{
       "node" => Atom.to_string(node()),

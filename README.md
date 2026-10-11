@@ -34,7 +34,9 @@ networks; configure distribution TLS across untrusted networks.
 
 Presence permits one connection/user: 30s lease, jittered 8–12s renewal.
 Each node has a heartbeat Redis connection and four session plus four renewal
-lanes; each lane admits 512 operations with a 5s budget. Lease failures close sockets.
+lanes; each lane admits 512 operations with a 5s budget. Heartbeat and renewal
+workers have higher scheduler priority. Temporary renewal failures retry within
+the confirmed lease and refuse new sends; expiry or ownership loss closes sockets.
 
 ## Admin & monitoring
 

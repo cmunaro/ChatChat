@@ -41,7 +41,9 @@ defmodule ChatchatTcp.Presence do
          {:ok, 1} <- session_operation(:renew, user_id, route) do
       :ok
     else
-      _ -> {:error, :presence_unavailable}
+      {:ok, 0} -> {:error, :lease_lost}
+      {:error, _} -> {:error, :presence_unavailable}
+      _ -> {:error, :lease_lost}
     end
   end
 

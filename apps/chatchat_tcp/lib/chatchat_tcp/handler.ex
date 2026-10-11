@@ -15,6 +15,7 @@ defmodule ChatchatTcp.Handler do
       user_id: nil,
       close_reason: nil,
       presence_deadline: nil,
+      presence_failures: 0,
       session: nil,
       pending_sends: MapSet.new(),
       presence_timer: nil,
@@ -133,7 +134,8 @@ defmodule ChatchatTcp.Handler do
     with true <- lease_live?(state),
          {:ok, %{"type" => type} = request} <- Jason.decode(frame) do
       result =
-        if type == "send_message" and MapSet.size(state.pending_sends) >= 16 and
+        if type == "send_message" and
+             (state.presence_failures > 0 or MapSet.size(state.pending_sends) >= 16) and
              ChatchatTcp.Protocol.uuid?(request["request_id"]) and
              ChatchatTcp.Protocol.uuid?(request["message_id"]) do
           {:reply,
@@ -141,7 +143,7 @@ defmodule ChatchatTcp.Handler do
              request["request_id"],
              request["message_id"],
              :failed,
-             :capacity
+             if(state.presence_failures > 0, do: :unavailable, else: :capacity)
            )}
         else
           RequestHandler.handle(user_id, state.session, type, request)
@@ -210,6 +212,7 @@ defmodule ChatchatTcp.Handler do
 
   @impl GenServer
   def handle_info(:renew_presence, {socket, %{user_id: user_id} = state}) do
+    if state.presence_timer, do: Process.cancel_timer(state.presence_timer)
     deadline = System.monotonic_time(:millisecond) + PresenceRouting.heartbeat_ttl()
 
     with true <- lease_live?(state),
@@ -217,12 +220,13 @@ defmodule ChatchatTcp.Handler do
          true <- lease_live?(state),
          :ok <- live_deadline(deadline) do
       timer = schedule_presence_renewal(deadline)
-      {:noreply, {socket, %{state | presence_deadline: deadline, presence_timer: timer}}}
+
+      {:noreply,
+       {socket,
+        %{state | presence_deadline: deadline, presence_timer: timer, presence_failures: 0}}}
     else
-      _ ->
-        unregister(state)
-        Socket.close(socket)
-        {:stop, :normal, {socket, %{state | close_reason: :presence_unavailable}}}
+      {:error, :presence_unavailable} -> retry_presence(socket, state)
+      _ -> close_presence(socket, state)
     end
   end
 
@@ -265,6 +269,25 @@ defmodule ChatchatTcp.Handler do
 
   def handle_info({reference, _late_reply}, {socket, state}) when is_reference(reference),
     do: {:noreply, {socket, state}}
+
+  defp retry_presence(socket, state) do
+    if lease_live?(state) do
+      delay = PresenceRouting.retry_delay(state.presence_deadline, state.presence_failures)
+      timer = Process.send_after(self(), :renew_presence, delay)
+
+      {:noreply,
+       {socket,
+        %{state | presence_timer: timer, presence_failures: min(state.presence_failures + 1, 3)}}}
+    else
+      close_presence(socket, state)
+    end
+  end
+
+  defp close_presence(socket, state) do
+    unregister(state)
+    Socket.close(socket)
+    {:stop, :normal, {socket, %{state | close_reason: :presence_unavailable}}}
+  end
 
   defp schedule_presence_renewal(deadline) do
     Process.send_after(self(), :renew_presence, PresenceRouting.renewal_delay(deadline))

@@ -37,8 +37,17 @@ defmodule ChatchatTcp.PresenceRouting do
     max(min(delay, remaining), 0)
   end
 
+  @doc "Back off transient renewal failures without extending the confirmed lease."
+  def retry_delay(deadline, failures) do
+    base = 1_000 * Integer.pow(2, min(failures, 2))
+    delay = base + :rand.uniform(div(base, 5) + 1) - 1
+    remaining = deadline - System.monotonic_time(:millisecond)
+    max(min(delay, remaining), 0)
+  end
+
   @impl GenServer
   def init(_options) do
+    Process.flag(:priority, :high)
     :ets.new(ChatchatTcp.Presence.Users, [:set, :named_table, :public])
     config = Application.fetch_env!(:chatchat_tcp, :presence_routing)
     base_id = Keyword.fetch!(config, :node_id)

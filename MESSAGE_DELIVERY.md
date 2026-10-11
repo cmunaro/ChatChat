@@ -75,6 +75,10 @@ Pending rows do not expire.
 - Expired writes never start; unconfirmed persistence stays retryable. Admission
   permits remain held until queued frames are consumed/discarded or running work exits.
 
+Temporary presence-renewal failures preserve the socket within its confirmed lease.
+New sends return `failed/unavailable` until renewal recovers; ping and ACK remain
+allowed. Lease expiry or ownership loss closes the socket.
+
 ## Mock clients
 
 Stores survive socket reconnect, but **process stop/crash destroys inbox, outbox and

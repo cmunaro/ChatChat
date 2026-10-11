@@ -66,13 +66,24 @@ defmodule ChatchatTcp.PresenceRedis do
   @impl true
   def init(_options) do
     url = Application.fetch_env!(:chatchat_tcp, :redis_url)
-    heartbeat = Supervisor.child_spec({Redix, {url, name: @heartbeat}}, id: @heartbeat)
+
+    heartbeat =
+      Supervisor.child_spec(
+        {Redix, {url, name: @heartbeat, spawn_opt: [priority: :high]}},
+        id: @heartbeat
+      )
 
     lanes =
       Enum.zip(@workers, @sessions ++ @renewals)
       |> Enum.map(fn {worker, redis} ->
         Supervisor.child_spec(
-          {ChatchatTcp.PresenceRedis.Lane, [name: worker, redis: redis, url: url]},
+          {ChatchatTcp.PresenceRedis.Lane,
+           [
+             name: worker,
+             redis: redis,
+             url: url,
+             priority: if(redis in @renewals, do: :high, else: :normal)
+           ]},
           id: worker
         )
       end)
@@ -134,8 +145,13 @@ defmodule ChatchatTcp.PresenceRedis.Lane do
 
   @impl true
   def init(options) do
+    priority = Keyword.get(options, :priority, :normal)
+    Process.flag(:priority, priority)
     Capacity.new(options[:name], @slots)
-    {:ok, redis} = Redix.start_link(options[:url], name: options[:redis])
+
+    {:ok, redis} =
+      Redix.start_link(options[:url], name: options[:redis], spawn_opt: [priority: priority])
+
     {:ok, %{redis: redis, pending: %{}, connection: options[:redis], table: options[:name]}}
   end
 
