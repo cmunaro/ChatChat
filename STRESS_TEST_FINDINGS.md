@@ -1031,3 +1031,38 @@ shared timeout incident with complete reconciliation remain unresolved limitatio
 The empirical 1,200/s-pass / 1,600/s-fail interval brackets these trials only; it is
 not a causal capacity ceiling or a production SLA. Rates above 1,600/s were not run.
 Task 12 remains separate.
+
+
+## Task 12 — bounded failure contracts; infrastructure execution deferred
+
+The isolated runner now supports Redis pause, PostgreSQL pause and simultaneous
+TCP process kill, with a reconciled healthy traffic prerequisite, incremental
+action evidence, 30/180/120-second outage/recovery/drain bounds, final 90-second
+socket stability and complete reconciliation acceptance. All targeted restorations
+are attempted after partial failures; memory, generator and outstanding-work
+safety stops remain active while expected dependency/socket failures are permitted.
+
+Focused coverage exercises hard client death with recorded inbox and unconfirmed
+outbox, wrapper replacement with empty stores, Redis lane registration after
+restoration, and deliberate PostgreSQL fallback failure followed by retry of the
+same identity and receiver ACK cleanup. Existing reconnect-population, scoped
+ACK, late-commit and failed-wakeup tests retain their contracts. Lane/Repo failure
+in focused tests models unavailable application access, not a 30-second datastore
+container outage. Python mocks verify orchestration only.
+
+No production behavior, protocol, schema or resource limits changed. No load
+provisioning or 80k simulation ran. Task 12 remains partially complete until
+separately authorized fresh infrastructure trials provide reconciliation evidence.
+Client death destroys simulator memory; this is not evidence of production loss.
+Task 11's drain socket dip, failed 1,600/s reconciliation and memory failure beyond
+five minutes remain unresolved.
+
+Verification used `mise.toml` Elixir 1.20.4/OTP 29.0.5, a dedicated
+`chatchat_task12_test` PostgreSQL database and isolated Redis DB 15 on temporary
+ports. Test migrations ran first. All 25 focused client and 31 focused TCP tests
+passed, along with 28 baseline/capture Python tests, repository formatting,
+warnings-as-errors compilation and `git diff --check`. An initial fallback retry
+ran before the restored Repo pool was ready; the test now waits for `SELECT 1`
+before asserting recovery. Temporary test containers were removed. Broad Python
+discovery encountered the unrelated dashboard script's incompatible unittest
+invocation; the explicit baseline/capture suites passed.

@@ -1,6 +1,6 @@
 """Authorized isolated load run; fixed CPU sets require a dedicated 12-CPU Docker host."""
 import argparse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import hashlib
 import os
@@ -133,10 +133,12 @@ def outbox_snapshot(args):
     return results
 
 
-def traffic_stop(sample, requested):
+def traffic_stop(sample, requested, allow_unavailable=False):
     states = clients(sample)
     sockets = authenticated(sample)
-    if len(states) != 2 or sockets is None or sockets < requested * .999:
+    if sample.get("generator_counter_reset"):
+        return True
+    if len(states) != 2 or (not allow_unavailable and (sockets is None or sockets < requested * .999)):
         return True
     stats = sample["probes"].get("docker_stats", {})
     if stats.get("status") == "ok":
@@ -144,11 +146,13 @@ def traffic_stop(sample, requested):
             row = json.loads(line)
             if float(row.get("MemPerc", "0%").rstrip("%")) >= 90:
                 return True
+    if any(s["queued_messages"] < s["unique_confirmed_messages"] or s["unique_confirmed_messages"] < 0 for s in states):
+        return True
     outstanding = sum(s["queued_messages"] - s["unique_confirmed_messages"] for s in states)
     return outstanding > max(100, requested * .01)
 
 
-def phase(args, output, label, duration, requested, setup=False, traffic=False, population=True):
+def phase(args, output, label, duration, requested, setup=False, traffic=False, population=True, allow_unavailable=False):
     directory = output / label
     directory.mkdir()
     (directory / "capture.json").write_text(json.dumps({"duration_seconds": duration,
@@ -159,6 +163,7 @@ def phase(args, output, label, duration, requested, setup=False, traffic=False, 
     start = time.time()
     last_resources = -30
     ready = False
+    previous_counts = {}
     with (directory / "samples.jsonl").open("w") as stream:
         while time.time() - start < duration:
             tick = time.monotonic()
@@ -166,8 +171,6 @@ def phase(args, output, label, duration, requested, setup=False, traffic=False, 
             sample = capture.capture_sample(args, resources)
             if resources:
                 last_resources = tick
-            stream.write(json.dumps(sample) + "\n")
-            stream.flush()
             samples.append(sample)
             states = clients(sample)
             sockets = authenticated(sample)
@@ -178,8 +181,18 @@ def phase(args, output, label, duration, requested, setup=False, traffic=False, 
             if setup and time.time() - start <= duration and len(states) == 2 and all(s["phase"] == "ready" for s in states) and sockets == requested:
                 ready = True
                 break
-            if traffic and time.time() - start >= 30:
-                if traffic_stop(sample, requested):
+            counter_reset = False
+            for key, probe in sample["probes"].items():
+                if key.startswith("client:") and probe.get("status") == "ok" and "phase" in probe.get("data", {}):
+                    counts = tuple(probe["data"][name] for name in ("queued_messages", "unique_confirmed_messages"))
+                    counter_reset |= key in previous_counts and any(a < b for a, b in zip(counts, previous_counts[key]))
+                    previous_counts[key] = counts
+            if counter_reset:
+                sample["generator_counter_reset"] = True
+            stream.write(json.dumps(sample) + "\n")
+            stream.flush()
+            if traffic and (allow_unavailable or time.time() - start >= 30):
+                if traffic_stop(sample, requested, allow_unavailable):
                     print(f"{label}: safety stop", flush=True)
                     break
             time.sleep(max(0, 10 - (time.monotonic() - tick)))
@@ -263,6 +276,112 @@ def set_traffic(args, probability, start=False):
           ''' + ('IO.inspect(ChatchatClient.start_simulation_activity(s.simulation))' if start else 'IO.puts("updated")'), timeout=12)
 
 
+def recovery_stable(samples, requested):
+    if not samples:
+        return False
+    times = [datetime.fromisoformat(s["timestamp"]).timestamp() for s in samples]
+    window = [s for s, t in zip(samples, times) if t >= times[-1] - 90]
+    return (times[-1] - times[0] >= 160 and len(window) >= 10
+            and datetime.fromisoformat(window[-1]["timestamp"]).timestamp()
+            - datetime.fromisoformat(window[0]["timestamp"]).timestamp() >= 90
+            and not any(b - a > 30 for a, b in zip(times, times[1:]))
+            and all(authenticated(s) is not None and authenticated(s) >= requested * .999
+                    and not traffic_stop(s, requested, True) for s in window))
+
+
+def failure_targets(args, scenario):
+    targets = getattr(args, {"redis": "redis_container", "postgres": "postgres_container",
+                            "tcp-all": "tcp_container"}[scenario])
+    if len(targets) != (2 if scenario == "tcp-all" else 1):
+        raise RuntimeError("failure scenario requires the complete dedicated target set")
+    return targets
+
+
+def run_failure(args, output, scenario, requested, probability, result):
+    targets = failure_targets(args, scenario)
+    action = "kill" if scenario == "tcp-all" else "pause"
+    restore = "start" if scenario == "tcp-all" else "unpause"
+    result.update(scenario=scenario, targets=targets, accepted=False, actions=[],
+                  expected_unavailable_probes=targets, outage_seconds=30,
+                  recovery_seconds=180, drain_seconds=120, stability_seconds=90)
+    path = output / "failure-scenario.json"
+
+    def save():
+        path.write_text(json.dumps(result, indent=2) + "\n")
+
+    def act(verb, target):
+        record = {"action": verb, "container": target,
+                  "started_at": datetime.now(timezone.utc).isoformat()}
+        result["actions"].append(record)
+        save()
+        try:
+            command(["docker", verb, target], timeout=30)
+            record["ok"] = True
+        except Exception as error:
+            record.update(ok=False, error=str(error))
+            raise
+        finally:
+            record["finished_at"] = datetime.now(timezone.utc).isoformat()
+            save()
+
+    planned = datetime.now(timezone.utc)
+    result.update(planned_at=planned.isoformat(),
+                  outage_deadline=(planned + timedelta(seconds=30)).isoformat(),
+                  recovery_deadline=(planned + timedelta(seconds=210)).isoformat(),
+                  drain_deadline=(planned + timedelta(seconds=330)).isoformat(),
+                  expected_unavailable_probes={
+                      "redis": ["Redis presence acquisition/renewal", "authenticated sockets"],
+                      "postgres": ["PostgreSQL pending rows", "fallback persistence"],
+                      "tcp-all": ["TCP RPC/metrics", "authenticated sockets"]}[scenario])
+    save()
+    try:
+        set_traffic(args, probability)
+        try:
+            # Kill every TCP node before starting any; dependencies and generators stay alive.
+            for target in targets:
+                act(action, target)
+            outage, _ = phase(args, output, "failure-outage", 30, requested,
+                              traffic=True, population=False, allow_unavailable=True)
+            result["safety_stop"] = any(traffic_stop(s, requested, True) for s in outage)
+        finally:
+            try:
+                if result.get("safety_stop"):
+                    set_traffic(args, 0.0)
+            finally:
+                errors = []
+                for target in targets:
+                    try:
+                        act(restore, target)
+                    except Exception as error:
+                        errors.append(str(error))
+                result["restoration_errors"] = errors
+                save()
+        if not result["restoration_errors"]:
+            recovery, _ = phase(args, output, "failure-recovery", 180, requested,
+                                traffic=True, population=False, allow_unavailable=True)
+            result["recovery_stable"] = recovery_stable(recovery, requested)
+            times = [datetime.fromisoformat(s["timestamp"]).timestamp() for s in outage + recovery]
+            result["observation_gap"] = any(b - a > 30 for a, b in zip(times, times[1:]))
+            result["safety_stop"] = result.get("safety_stop", False) or any(
+                traffic_stop(s, requested, True) for s in recovery)
+            # Histograms here include outage latency; no healthy p95 gate applies.
+            result["outage_latency_counters"] = [s.get("confirmation_latency_ms") for s in clients(recovery[-1])] if recovery else []
+    except Exception as error:
+        result["error"] = str(error)
+    finally:
+        try:
+            set_traffic(args, 0.0)
+            drained, _ = phase(args, output, "failure-drain", 120, requested)
+            result["reconciliation"] = reconciliation(output / "failure-drain", drained, requested)
+            result["accepted"] = (result.get("recovery_stable", False)
+                                  and not result.get("safety_stop", False)
+                                  and not result.get("observation_gap", True)
+                                  and not result.get("error") and not result.get("restoration_errors")
+                                  and result["reconciliation"]["complete"])
+        finally:
+            save()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
@@ -273,7 +392,9 @@ def main():
     parser.add_argument("--soak", type=int, default=0, help="soak highest accepted rate after ramp (seconds)")
     parser.add_argument("--build", action="store_true")
     parser.add_argument("--proxy-threads", type=int, choices=[1, 2], default=2)
-    parser.add_argument("--backend-outage", action="store_true",
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--failure-scenario", choices=["redis", "postgres", "tcp-all"])
+    group.add_argument("--backend-outage", action="store_true",
                         help="interrupt one dedicated TCP node for 30s, then observe 180s recovery at .01 traffic")
     parser.add_argument("--outage-mode", choices=["stop", "pause"], default="stop",
                         help="pause keeps DNS intact to exercise health timeout and lease expiry")
@@ -379,6 +500,11 @@ def main():
                 results[-1]["reconciliation"] = reconciliation(opts.output / "soak-drain", drained, largest)
                 if not results[-1]["reconciliation"]["complete"]:
                     raise RuntimeError("soak did not fully reconcile within drain deadline")
+            if opts.failure_scenario:
+                if chosen is None or not results[-1].get("accepted") or not results[-1].get("reconciliation", {}).get("complete"):
+                    raise RuntimeError("failure injection requires passing reconciled traffic")
+                results.append({"failure_scenario": opts.failure_scenario})
+                run_failure(args, opts.output, opts.failure_scenario, largest, chosen, results[-1])
             if opts.backend_outage:
                 set_traffic(args, .01)
                 node = args.tcp_container[0]
@@ -401,13 +527,16 @@ def main():
     finally:
         (opts.output / "results.json").write_text(json.dumps(results, indent=2) + "\n")
         # Save counters above before writers stop. Only this fresh project's volumes are removed.
-        command(COMPOSE + ["stop", "loadgen", "tcp", "web"], env=env)
-        pg = containers(env, "postgres")
-        if pg:
-            counts = command(["docker", "exec", pg[0], "psql", "-U", "chatchat", "-d", "chatchat_baseline", "-Atc",
-                "TRUNCATE messages, users, admin_users RESTART IDENTITY; SELECT (SELECT count(*) FROM messages), (SELECT count(*) FROM users), (SELECT count(*) FROM admin_users);"])
-            (opts.output / "cleanup.txt").write_text(counts + "\n")
-        command(COMPOSE + ["down", "-v", "--remove-orphans"], env=env)
+        try:
+            command(COMPOSE + ["stop", "loadgen", "tcp", "web"], env=env)
+            pg = containers(env, "postgres")
+            if pg:
+                counts = command(["docker", "exec", pg[0], "psql", "-U", "chatchat", "-d", "chatchat_baseline", "-Atc",
+                    "TRUNCATE messages, users, admin_users RESTART IDENTITY; SELECT (SELECT count(*) FROM messages), (SELECT count(*) FROM users), (SELECT count(*) FROM admin_users);"], timeout=10)
+                (opts.output / "cleanup.txt").write_text(counts + "\n")
+        finally:
+            command(COMPOSE + ["down", "-v", "--remove-orphans"], env=env)
+
 
 
 if __name__ == "__main__":

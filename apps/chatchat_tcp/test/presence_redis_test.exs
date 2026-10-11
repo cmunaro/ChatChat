@@ -34,6 +34,22 @@ defmodule ChatchatTcp.PresenceRedisTest do
     assert {:ok, _} = Presence.route(user)
   end
 
+  test "registration fails closed while its Redis lane is unavailable and succeeds after restoration",
+       %{user: user, lane: lane} do
+    :ok = Supervisor.terminate_child(PresenceRedis, lane)
+
+    try do
+      assert {:error, :presence_unavailable} = Presence.register(user)
+      assert [] == Presence.get_connections(user)
+    after
+      {:ok, _} = Supervisor.restart_child(PresenceRedis, lane)
+    end
+
+    wait_for(fn -> match?({:ok, _}, Presence.register(user)) end)
+    assert :ok = Presence.renew(user)
+    assert :ok = Presence.unregister(user)
+  end
+
   test "delayed session work expires before execution while heartbeat refresh remains independent",
        %{user: user, lane: lane} do
     :ok = :sys.suspend(lane)
@@ -135,6 +151,9 @@ defmodule ChatchatTcp.PresenceRedisTest do
     wait_for(fn -> is_pid(Process.whereis(lane)) and Process.whereis(lane) != old end)
     assert Process.whereis(PresenceRedis.heartbeat()) == heartbeat
     wait_for(fn -> Presence.route(user) == {:ok, route} end)
+    assert :ok = Presence.renew(user)
+    assert :ok = Presence.unregister(user)
+    assert {:ok, _} = Presence.register(user)
     assert :ok = Presence.renew(user)
     assert :ok = Presence.unregister(user)
   end

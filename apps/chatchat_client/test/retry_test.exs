@@ -63,14 +63,25 @@ defmodule ChatchatClient.RetryTest do
     Task.await(backend)
   end
 
-  test "process restart starts with an empty outbox", context do
+  test "hard client death destroys inbox and unconfirmed outbox; wrapper replaces it", context do
     owner = self()
 
     backend =
       Task.async(fn ->
         first_socket = accept(context.listener)
         first = receive_send(first_socket)
+
+        send_json(first_socket, %{
+          type: "message",
+          from_user_id: 2,
+          message_id: Ecto.UUID.generate(),
+          message: "recorded",
+          inserted_at: "2026-10-11T00:00:00Z",
+          receipt_id: Ecto.UUID.generate()
+        })
+
         send(owner, {:first, first})
+        assert {:ok, _ack} = :gen_tcp.recv(first_socket, 0, 2_000)
         assert {:error, :closed} = :gen_tcp.recv(first_socket, 0, 2_000)
         second_socket = accept(context.listener)
         second = receive_send(second_socket, 15_000)
@@ -88,15 +99,39 @@ defmodule ChatchatClient.RetryTest do
         :gen_tcp.close(second_socket)
       end)
 
-    first_client =
-      ChatchatClient.run_preprovisioned("restart", 1)
+    clients = :ets.new(:death_clients, [:set, :public])
+
+    {:ok, wrapper} =
+      ChatchatClient.SimulatedClient.start_link(
+        index: 1,
+        username: "restart",
+        user_id: 1,
+        clients: clients,
+        simulator: self(),
+        connection_counts: ChatchatClient.ConnectionDiagnostics.new(),
+        result_counts: :atomics.new(15, signed: false)
+      )
+
+    on_exit(fn -> if Process.alive?(wrapper), do: GenServer.stop(wrapper) end)
+    assert_receive {:client_ready, 1, ^wrapper}, 2_000
+    first_client = :sys.get_state(wrapper).client
 
     assert {:ok, id} = ChatchatClient.send_message(first_client, 2, "unknown")
     assert_receive {:first, first}, 2_000
-    GenServer.stop(first_client)
+    eventually(fn -> length(ChatchatClient.inbox(first_client)) == 1 end)
+    assert [[^id, 2, "unknown", nil]] = ChatchatClient.outbox(first_client)
+    monitor = Process.monitor(first_client)
+    Process.exit(first_client, :kill)
+    assert_receive {:DOWN, ^monitor, :process, ^first_client, :killed}
 
-    second_client =
-      ChatchatClient.run_preprovisioned("restart", 1)
+    eventually(fn ->
+      replacement = :sys.get_state(wrapper).client
+      is_pid(replacement) and replacement != first_client
+    end)
+
+    second_client = :sys.get_state(wrapper).client
+    assert [{1, ^second_client, 1}] = :ets.lookup(clients, 1)
+    assert ChatchatClient.inbox(second_client) == []
 
     on_exit(fn -> if Process.alive?(second_client), do: GenServer.stop(second_client) end)
     assert ChatchatClient.outbox(second_client) == []

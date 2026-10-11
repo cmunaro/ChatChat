@@ -356,13 +356,30 @@ defmodule ChatchatTcp.MessageDeliveryTest do
     :ok = Supervisor.terminate_child(ChatchatBroker.Supervisor, Repo)
 
     on_exit(fn ->
-      {:ok, _} = Supervisor.restart_child(ChatchatBroker.Supervisor, Repo)
-      Ecto.Adapters.SQL.Sandbox.mode(Repo, :auto)
+      if Process.whereis(Repo) == nil do
+        {:ok, _} = Supervisor.restart_child(ChatchatBroker.Supervisor, Repo)
+        Ecto.Adapters.SQL.Sandbox.mode(Repo, :auto)
+      end
     end)
 
-    send_json(from, request(receiver.id))
+    request = request(receiver.id)
+    send_json(from, request)
     assert {:ok, %{"status" => "failed", "reason" => "unavailable"}} = recv(from)
     eventually(fn -> MessageDelivery.metric_snapshot().attempts == 0 end)
+    {:ok, _} = Supervisor.restart_child(ChatchatBroker.Supervisor, Repo)
+    Ecto.Adapters.SQL.Sandbox.mode(Repo, :auto)
+    eventually(fn -> match?({:ok, _}, Ecto.Adapters.SQL.query(Repo, "SELECT 1", [])) end)
+    send_json(from, %{request | request_id: Ecto.UUID.generate()})
+    assert {:ok, %{"status" => "ok"}} = recv(from)
+    assert Repo.get_by!(Message, sender_id: sender.id, message_id: request.message_id)
+    to = connect(receiver.id)
+    assert {:ok, frame} = recv(to)
+    assert frame["message_id"] == request.message_id
+    acknowledge(to, frame)
+
+    eventually(fn ->
+      Repo.get_by(Message, sender_id: sender.id, message_id: request.message_id) == nil
+    end)
   end
 
   test "ACK racing a running insert completes once and leaves committed row recoverable", %{

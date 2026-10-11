@@ -251,3 +251,49 @@ the findings. Acceptance makes no claim beyond five minutes. Task 12 is separate
 artifact directory; subsequent gate hardening also rejects memory-stopped phases
 and requires the expected scan population. Neither trial establishes an exact
 capacity ceiling or authorizes increasing resource limits.
+
+
+## Task 12 bounded failure scenarios
+
+Execution is deferred pending authorization. Use a fresh dedicated deployment per
+scenario, task 11's fixed resources, 80k users, `.015` send probability and a
+300-second healthy hold. Example command for a later authorized Redis trial:
+
+```sh
+python3 observability/run_baseline.py --steps 80000 --hold 120 \
+  --traffic-hold 300 --traffic .015 --failure-scenario redis \
+  --output /tmp/chatchat-task12-redis
+```
+
+`--failure-scenario` accepts `redis`, `postgres`, or `tcp-all` and excludes
+`--backend-outage`; existing defaults and the single-backend command remain valid.
+Injection requires passing traffic and complete reconciliation first. Redis and
+PostgreSQL are paused for 30 seconds, preserving containers and data. TCP failure
+kills both dedicated nodes before starting either; Redis, PostgreSQL and generators
+stay alive. This tests backend process failure, not simultaneous datastore loss.
+
+Redis unavailability can reject presence acquisition/renewal and close sockets.
+Surviving client stores must reconnect and retry. PostgreSQL unavailability may
+still allow direct receiver ACKs; fallback without a receipt must fail retryably
+and retain the original identity. Recovery runs traffic for 180 seconds, then
+zero traffic for a 120-second drain. Acceptance requires a final 90-second window
+of fresh ≥99.9% sockets, no observation gap over 30 seconds, complete receiver
+scans, admissions = confirmations = inbox identities, and zero pending PostgreSQL
+rows, outboxes and inflight work. Outage latency counters are saved separately;
+the healthy p95 criterion does not apply to outage/recovery traffic.
+
+Expected unavailable probes and sockets do not stop an intentional outage.
+Unavailable/reset generator counters, outstanding work above `max(100, users*.01)`
+and memory ≥90% still stop traffic. A safety stop halts submissions, restores
+dependencies and attempts bounded drain. Action plans and timestamps are saved
+incrementally in `failure-scenario.json`; every affected target is restored in
+`finally`, even after partial injection/restoration failures. Results are saved
+before dedicated-project cleanup. Mocks establish ordering and failure handling,
+not recovery under load.
+
+Client-process death is a separate focused test contract: a killed client destroys
+its recorded inbox and unconfirmed outbox; the simulator wrapper replaces it with
+empty stores. Reconnect of a surviving process preserves identities. Destroyed
+simulator state is explicit and does not imply production message loss or durable
+client storage. Existing task 11 drain socket dip, failed 1,600/s reconciliation
+and longer-run memory failure remain unresolved.

@@ -1,4 +1,6 @@
 import unittest
+from unittest.mock import patch
+from types import SimpleNamespace
 import json
 from pathlib import Path
 import tempfile
@@ -105,6 +107,99 @@ class BaselineTest(unittest.TestCase):
                 self.assertFalse(baseline.reconciliation(directory, [row], 10000)["complete"])
             write({"a": scan, "b": scan}, {"available": False})
             self.assertFalse(baseline.reconciliation(directory, [row], 10000)["complete"])
+
+    def test_failure_selection_rejects_combination_before_docker(self):
+        with patch("sys.argv", ["runner", "--output", "/tmp/unused", "--backend-outage",
+                                "--failure-scenario", "redis"]), patch.object(baseline, "command") as command:
+            with self.assertRaises(SystemExit):
+                baseline.main()
+            command.assert_not_called()
+
+    def test_failure_targets_and_safety_preserve_generator_gates(self):
+        args = SimpleNamespace(tcp_container=["tcp1", "tcp2"], redis_container=["redis"],
+                               postgres_container=["postgres"])
+        for scenario, targets in [("redis", ["redis"]), ("postgres", ["postgres"]),
+                                  ("tcp-all", ["tcp1", "tcp2"])]:
+            self.assertEqual(baseline.failure_targets(args, scenario), targets)
+        row = sample(sockets=0)
+        self.assertTrue(baseline.traffic_stop({**row, "generator_counter_reset": True}, 10000, True))
+        self.assertFalse(baseline.traffic_stop(row, 10000, True))
+        del row["probes"]["client:a"]
+        self.assertTrue(baseline.traffic_stop(row, 10000, True))
+        args.tcp_container = ["tcp1"]
+        with self.assertRaises(RuntimeError):
+            baseline.failure_targets(args, "tcp-all")
+
+    def test_failure_actions_restore_every_target_and_drain_after_partial_failure(self):
+        args = SimpleNamespace(tcp_container=["tcp1", "tcp2"])
+        for failed_action in (None, ("kill", "tcp2"), ("start", "tcp1")):
+            calls = []
+            def command(argv, **kwargs):
+                calls.append(tuple(argv[1:]))
+                if tuple(argv[1:]) == failed_action:
+                    raise RuntimeError("injected failure")
+            with tempfile.TemporaryDirectory() as temporary, patch.object(baseline, "command", command), \
+                    patch.object(baseline, "set_traffic") as traffic, \
+                    patch.object(baseline, "phase", return_value=([sample(sockets=0)], False)) as phase, \
+                    patch.object(baseline, "reconciliation", return_value={"complete": False}):
+                result = {}
+                baseline.run_failure(args, Path(temporary), "tcp-all", 10000, .015, result)
+                self.assertEqual(calls, [("kill", "tcp1"), ("kill", "tcp2"),
+                                         ("start", "tcp1"), ("start", "tcp2")])
+                self.assertFalse(result["accepted"])
+                self.assertEqual(phase.call_args.args[2], "failure-drain")
+                self.assertEqual(traffic.call_args.args[1], 0.0)
+                self.assertEqual(len(json.loads((Path(temporary) / "failure-scenario.json").read_text())["actions"]), 4)
+
+    def test_safety_stop_halts_submissions_before_restoration(self):
+        events = []
+        row = sample(sockets=0)
+        row["probes"]["docker_stats"] = {"status": "ok", "data": json.dumps({"MemPerc": "90%"})}
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(baseline, "command", side_effect=lambda argv, **kw: events.append(argv[1])), \
+                patch.object(baseline, "set_traffic", side_effect=lambda args, p: events.append(p)), \
+                patch.object(baseline, "phase", return_value=([row], False)), \
+                patch.object(baseline, "reconciliation", return_value={"complete": True}):
+            result = {}
+            baseline.run_failure(SimpleNamespace(redis_container=["redis"]), Path(temporary),
+                                 "redis", 10000, .015, result)
+            self.assertLess(events.index(0.0), events.index("unpause"))
+            self.assertTrue(result["safety_stop"])
+            self.assertFalse(result["accepted"])
+
+    def test_failure_acceptance_requires_reconciliation(self):
+        start = datetime.now(timezone.utc)
+        rows = []
+        for tick in range(21):
+            row = sample()
+            now = start + timedelta(seconds=tick * 10)
+            row["timestamp"] = now.isoformat()
+            for value in row["probes"]["prometheus:collection_last_success"]["data"]:
+                value["value"][1] = str(now.timestamp())
+            rows.append(row)
+        for complete in (True, False):
+            with tempfile.TemporaryDirectory() as temporary, \
+                    patch.object(baseline, "command"), patch.object(baseline, "set_traffic"), \
+                    patch.object(baseline, "phase", side_effect=[(rows[:3], False), (rows[3:], False), (rows[-1:], False)]), \
+                    patch.object(baseline, "reconciliation", return_value={"complete": complete}):
+                result = {}
+                baseline.run_failure(SimpleNamespace(postgres_container=["pg"]), Path(temporary),
+                                     "postgres", 10000, .015, result)
+                self.assertEqual(result["accepted"], complete)
+
+    def test_recovery_needs_final_ninety_seconds_and_no_gap(self):
+        rows = []
+        start = datetime.now(timezone.utc)
+        for tick in range(18):
+            row = sample(sockets=10000 if tick >= 8 else 0, failed=3)
+            now = start + timedelta(seconds=tick * 10)
+            row["timestamp"] = now.isoformat()
+            for value in row["probes"]["prometheus:collection_last_success"]["data"]:
+                value["value"][1] = str(now.timestamp())
+            rows.append(row)
+        self.assertTrue(baseline.recovery_stable(rows, 10000))
+        self.assertFalse(baseline.recovery_stable(rows[:17], 10000))
+        self.assertFalse(baseline.recovery_stable(rows[:2] + rows[6:], 10000))
 
     def test_requires_repeated_samples_and_no_reconnect_failure(self):
         self.assertTrue(baseline.stable([sample()] * 12, 10000))

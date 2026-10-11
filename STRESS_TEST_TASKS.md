@@ -482,13 +482,13 @@ no application behavior or resource limits changed. Task 12 remains separate.
 Depends on tasks 9–11 for a declared operating point. Owners: responsible client,
 TCP and broker layers plus the isolated baseline runner.
 
-- [ ] Define separate bounded scenarios for client-process death, Redis outage,
+- [x] Define separate bounded scenarios for client-process death, Redis outage,
   PostgreSQL outage and simultaneous multi-node failure, including expected
   guarantees, safety stops and recovery/drain deadlines before execution.
-- [ ] Distinguish in-memory simulator-store loss on client-process death from
+- [x] Distinguish in-memory simulator-store loss on client-process death from
   production delivery guarantees. Document the boundary; add durable client storage
   only if a requirement calls for it.
-- [ ] At responsible layers add focused regression coverage for any discovered
+- [x] At responsible layers add focused regression coverage for any discovered
   defect; preserve atomic transitions, recoverable persistence claims, receiver
   ACK scope and cleanup only after PostgreSQL commit.
 - [ ] Run authorized scenarios in dedicated services and reconcile identities,
@@ -497,3 +497,10 @@ TCP and broker layers plus the isolated baseline runner.
 Done when each selected failure scenario has a reproducible outcome and explicit
 recovery/data guarantees. The completed single-backend pause kept Redis and
 PostgreSQL alive and does not validate these scenarios.
+
+
+Task 12 is **partially complete**: bounded contracts, focused recovery tests and
+mocked runner orchestration are implemented. Infrastructure trials remain deferred;
+no users were provisioned and no 80k simulation ran in this iteration. See the
+[task 12 procedure](observability/BASELINE.md#task-12-bounded-failure-scenarios)
+and findings. Focused tests and mocks do not establish multi-node recovery.
