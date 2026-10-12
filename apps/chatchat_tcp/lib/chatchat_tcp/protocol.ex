@@ -28,6 +28,33 @@ defmodule ChatchatTcp.Protocol do
     end
   end
 
+  def validate_delete(sender, request) do
+    if uuid?(request["request_id"]) and uuid?(request["message_id"]) and
+         user?(sender) and user?(request["user_id"]) and
+         not Map.has_key?(request, "sender_id") and not Map.has_key?(request, "from_user_id"),
+       do: :ok,
+       else: {:error, :invalid_request}
+  end
+
+  def stored_delivery(%{kind: "delete"} = message, receipt) do
+    %{
+      type: "message_deleted",
+      from_user_id: message.sender_id,
+      message_id: message.message_id,
+      receipt_id: receipt
+    }
+  end
+
+  def stored_delivery(message, receipt),
+    do:
+      delivery(
+        message.sender_id,
+        message.message_id,
+        message.payload,
+        message.inserted_at,
+        receipt
+      )
+
   def delivery(sender, id, payload, timestamp, receipt) do
     %{
       type: "message",

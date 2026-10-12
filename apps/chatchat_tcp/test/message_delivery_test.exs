@@ -706,6 +706,94 @@ defmodule ChatchatTcp.MessageDeliveryTest do
     eventually(fn -> not ChatchatTcp.Presence.online?(receiver.id) end)
   end
 
+  test "deletion replaces offline content and survives wrong and stale ACKs", %{
+    sender: sender,
+    receiver: receiver,
+    other: other
+  } do
+    from = connect(sender.id)
+    original = request(receiver.id)
+    send_json(from, original)
+    assert {:ok, %{"status" => "ok"}} = recv(from)
+    to = connect(receiver.id)
+    assert {:ok, old_frame} = recv(to)
+
+    deletion = %{
+      type: "delete_message",
+      request_id: Ecto.UUID.generate(),
+      message_id: original.message_id,
+      user_id: receiver.id
+    }
+
+    send_json(from, deletion)
+    assert {:ok, %{"status" => "ok", "request_id" => request_id}} = recv(from)
+    assert request_id == deletion.request_id
+    assert {:ok, %{"type" => "message_deleted"} = frame} = recv(to)
+    assert frame["from_user_id"] == sender.id
+    assert frame["message_id"] == original.message_id
+    refute Map.has_key?(frame, "message")
+    wrong = connect(other.id)
+    acknowledge(wrong, frame)
+    acknowledge(to, old_frame)
+    Process.sleep(30)
+
+    assert %Message{kind: "delete", payload: ""} =
+             Repo.get_by!(Message, sender_id: sender.id, message_id: original.message_id)
+
+    acknowledge(to, frame)
+
+    eventually(fn ->
+      Repo.get_by(Message, sender_id: sender.id, message_id: original.message_id) == nil
+    end)
+  end
+
+  test "offline deletion retries recover on reconnect", %{sender: sender, receiver: receiver} do
+    from = connect(sender.id)
+
+    deletion = %{
+      type: "delete_message",
+      request_id: Ecto.UUID.generate(),
+      message_id: Ecto.UUID.generate(),
+      user_id: receiver.id
+    }
+
+    send_json(from, deletion)
+    assert {:ok, %{"status" => "ok"}} = recv(from)
+    send_json(from, %{deletion | request_id: Ecto.UUID.generate()})
+    assert {:ok, %{"status" => "ok"}} = recv(from)
+    assert [%Message{kind: "delete"}] = MessagesStore.pending_page(receiver.id)
+    to = connect(receiver.id)
+    assert {:ok, %{"type" => "message_deleted"} = old_frame} = recv(to)
+    :gen_tcp.close(to)
+    eventually(fn -> not ChatchatTcp.Presence.online?(receiver.id) end)
+    reconnected = connect(receiver.id)
+    assert {:ok, %{"type" => "message_deleted"} = frame} = recv(reconnected)
+    acknowledge(reconnected, old_frame)
+    Process.sleep(20)
+    assert [%Message{kind: "delete"}] = MessagesStore.pending_page(receiver.id)
+    acknowledge(reconnected, frame)
+    eventually(fn -> MessagesStore.pending_page(receiver.id) == [] end)
+  end
+
+  test "deletion rejects spoofed sender and invalid receiver", %{
+    sender: sender,
+    receiver: receiver
+  } do
+    from = connect(sender.id)
+
+    deletion = %{
+      type: "delete_message",
+      request_id: Ecto.UUID.generate(),
+      message_id: Ecto.UUID.generate(),
+      user_id: receiver.id
+    }
+
+    send_json(from, Map.put(deletion, :sender_id, receiver.id))
+    assert {:ok, %{"status" => "rejected", "reason" => "invalid_request"}} = recv(from)
+    send_json(from, %{deletion | user_id: 9_223_372_036_854_775_807})
+    assert {:ok, %{"status" => "rejected", "reason" => "invalid_receiver"}} = recv(from)
+  end
+
   defp request(receiver),
     do: %{
       type: "send_message",

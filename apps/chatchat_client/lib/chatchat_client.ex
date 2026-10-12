@@ -123,6 +123,22 @@ defmodule ChatchatClient do
 
   def send_message(_, _, _), do: {:error, :invalid_params}
 
+  @doc "Requests deletion once; returns the backend result. Retry failures with the same message ID."
+  @spec delete_message(pid(), pid() | integer(), String.t()) ::
+          {:ok, String.t()} | {:error, term()}
+  def delete_message(from, to, message_id) when is_pid(from) and is_pid(to) do
+    delete_message(from, GenServer.call(to, :user_id, call_timeout()), message_id)
+  end
+
+  def delete_message(from, to, message_id) when is_pid(from) and is_integer(to) do
+    case Store.validate_message(1, to, message_id, "") do
+      :ok -> GenServer.call(from, {:delete_message, to, message_id}, call_timeout())
+      _ -> {:error, :invalid_params}
+    end
+  end
+
+  def delete_message(_, _, _), do: {:error, :invalid_params}
+
   @impl true
   def init(state) do
     state = Map.merge(%{preprovisioned: false}, state)
@@ -180,6 +196,50 @@ defmodule ChatchatClient do
 
       error ->
         {:reply, error, state}
+    end
+  end
+
+  def handle_call({:delete_message, user_id, id}, _from, state) do
+    case :gb_trees.lookup(id, state.store.outbox) do
+      {:value, %{rejection: nil}} ->
+        {:reply, {:error, :message_pending}, state}
+
+      _ ->
+        request_id = Ecto.UUID.generate()
+
+        request = %{
+          type: "delete_message",
+          user_id: user_id,
+          message_id: id,
+          request_id: request_id
+        }
+
+        matcher =
+          &match?(
+            %{"type" => "message_result", "request_id" => ^request_id, "message_id" => ^id},
+            &1
+          )
+
+        case Socket.request(state.socket, request, matcher, state) do
+          {:ok, response, state} ->
+            case handle_response(state.socket, response, state) do
+              {:ok, state} ->
+                IO.puts("#{state.username} deletion result: #{inspect(response, pretty: true)}")
+
+                result =
+                  if response["status"] == "ok",
+                    do: {:ok, id},
+                    else: {:error, {response["status"], response["reason"]}}
+
+                {:reply, result, state}
+
+              {:error, reason, state} ->
+                {:reply, {:error, reason}, close_and_reconnect(state, :request_failure)}
+            end
+
+          {:error, reason, state} ->
+            {:reply, {:error, reason}, close_and_reconnect(state, :request_failure)}
+        end
     end
   end
 
@@ -453,6 +513,27 @@ defmodule ChatchatClient do
       end
     else
       error -> {:error, {:receive_storage, error}, state}
+    end
+  end
+
+  def handle_response(socket, %{"type" => "message_deleted"} = frame, state) do
+    if is_integer(frame["from_user_id"]) and frame["from_user_id"] > 0 and
+         frame["from_user_id"] <= 9_223_372_036_854_775_807 and
+         match?({:ok, _}, Ecto.UUID.cast(frame["message_id"])) and
+         match?({:ok, _}, Ecto.UUID.cast(frame["receipt_id"])) do
+      IO.puts("#{state.username} received message deletion: #{inspect(frame)}")
+
+      case Socket.send_frame(socket, %{
+             type: "message_delivered_ack",
+             from_user_id: frame["from_user_id"],
+             message_id: frame["message_id"],
+             receipt_id: frame["receipt_id"]
+           }) do
+        :ok -> {:ok, state}
+        {:error, reason} -> {:error, reason, state}
+      end
+    else
+      {:error, :invalid_deletion, state}
     end
   end
 

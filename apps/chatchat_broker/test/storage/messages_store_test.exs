@@ -77,6 +77,42 @@ defmodule ChatchatBroker.Storage.MessagesStoreTest do
              )
   end
 
+  test "deletion replaces content, rejects receiver changes and resends, and scopes cleanup", %{
+    message: message,
+    other: other
+  } do
+    assert {:ok, _} = MessagesStore.insert_pending(message)
+    deletion = Map.merge(message, %{kind: "delete", payload: ""})
+
+    assert {:error, :identity_conflict} =
+             MessagesStore.insert_pending(%{deletion | receiver_id: other})
+
+    assert {:ok, deleted} = MessagesStore.insert_pending(deletion)
+    assert deleted.kind == "delete"
+    assert deleted.payload == ""
+    assert {:ok, ^deleted} = MessagesStore.insert_pending(deletion)
+    assert {:error, :identity_conflict} = MessagesStore.insert_pending(message)
+
+    assert :ok =
+             MessagesStore.delete_for_receiver(
+               message.receiver_id,
+               message.sender_id,
+               message.message_id
+             )
+
+    assert [^deleted] = MessagesStore.pending_page(message.receiver_id)
+
+    assert :ok =
+             MessagesStore.delete_for_receiver(
+               message.receiver_id,
+               message.sender_id,
+               message.message_id,
+               "delete"
+             )
+
+    assert [] = MessagesStore.pending_page(message.receiver_id)
+  end
+
   test "pages are bounded and wrap can revisit unacknowledged rows", %{message: message} do
     for _ <- 1..129 do
       assert {:ok, _} =

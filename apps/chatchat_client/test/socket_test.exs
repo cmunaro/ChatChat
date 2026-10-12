@@ -6,6 +6,37 @@ defmodule ChatchatClient.SocketTest do
     %{store: Store.new(2), user_id: 2, username: "test", inflight: %{}, result_observer: self()}
   end
 
+  test "delete helper refuses messages still awaiting delivery" do
+    initial = state()
+    {:ok, id, store} = Store.put_outbox(initial.store, 1, "pending")
+    initial = %{initial | store: store}
+
+    assert {:reply, {:error, :message_pending}, ^initial} =
+             ChatchatClient.handle_call({:delete_message, 1, id}, nil, initial)
+  end
+
+  test "mock client logs and acknowledges a deletion without changing its store" do
+    {client, server} = connected_sockets()
+
+    frame = %{
+      "type" => "message_deleted",
+      "from_user_id" => 1,
+      "message_id" => Ecto.UUID.generate(),
+      "receipt_id" => Ecto.UUID.generate()
+    }
+
+    initial = state()
+
+    output =
+      ExUnit.CaptureIO.capture_io(fn ->
+        assert {:ok, ^initial} = ChatchatClient.handle_response(client, frame, initial)
+      end)
+
+    assert output =~ "received message deletion"
+    assert {:ok, line} = :gen_tcp.recv(server, 0, 1_000)
+    assert Jason.decode!(line) == Map.put(frame, "type", "message_delivered_ack")
+  end
+
   test "interleaved confirmations update state before the request completes" do
     {client, server} = connected_sockets()
     :ok = Socket.activate(client)

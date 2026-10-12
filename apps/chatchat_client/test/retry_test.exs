@@ -20,6 +20,59 @@ defmodule ChatchatClient.RetryTest do
     %{listener: listener}
   end
 
+  test "delete helper sends correlated requests and returns success or rejection", context do
+    owner = self()
+    id = Ecto.UUID.generate()
+
+    backend =
+      Task.async(fn ->
+        socket = accept(context.listener)
+
+        for status <- ["ok", "rejected"] do
+          assert {:ok, line} = :gen_tcp.recv(socket, 0, 2_000)
+          frame = Jason.decode!(line)
+          assert frame["type"] == "delete_message"
+          assert frame["user_id"] == 2
+          assert frame["message_id"] == id
+          assert {:ok, _} = Ecto.UUID.cast(frame["request_id"])
+          send(owner, {:deletion_request, frame["request_id"]})
+          response = Map.merge(frame, %{"type" => "message_result", "status" => status})
+
+          response =
+            if status == "rejected",
+              do: Map.put(response, "reason", "invalid_receiver"),
+              else: response
+
+          send_json(socket, response)
+        end
+
+        receive do
+          :close -> :ok
+        end
+
+        :gen_tcp.close(socket)
+      end)
+
+    output =
+      ExUnit.CaptureIO.capture_io(fn ->
+        client = ChatchatClient.run_preprovisioned("delete", 1)
+        on_exit(fn -> if Process.alive?(client), do: GenServer.stop(client) end)
+        assert {:error, :invalid_params} = ChatchatClient.delete_message(client, 2, "invalid")
+        assert {:error, :invalid_params} = ChatchatClient.delete_message(client, 0, id)
+        assert {:ok, ^id} = ChatchatClient.delete_message(client, 2, id)
+
+        assert {:error, {"rejected", "invalid_receiver"}} =
+                 ChatchatClient.delete_message(client, 2, id)
+      end)
+
+    assert output =~ "deletion result"
+    assert_receive {:deletion_request, first}
+    assert_receive {:deletion_request, second}
+    assert first != second
+    send(backend.pid, :close)
+    Task.await(backend)
+  end
+
   test "lost response retries the same identity and ignores an old result", context do
     owner = self()
 

@@ -11,7 +11,7 @@ defmodule ChatchatTcp.RequestHandler do
     end
   end
 
-  def handle(user, session, "send_message", request) do
+  def handle(user, session, type, request) when type in ["send_message", "delete_message"] do
     if Protocol.uuid?(request["request_id"]) and Protocol.uuid?(request["message_id"]) do
       case MessageDelivery.submit(user, session, request) do
         {:accepted, reference} ->

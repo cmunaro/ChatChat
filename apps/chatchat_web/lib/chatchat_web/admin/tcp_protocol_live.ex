@@ -121,6 +121,30 @@ defmodule ChatchatWeb.Admin.TcpProtocolLive do
           }
         )
       ]),
+      group("Message deletion", [
+        frame(
+          "delete_message",
+          "Client → server",
+          "Deletes an authenticated sender/message identity; retry with a fresh request ID.",
+          %{
+            type: "delete_message",
+            request_id: "7a724ef9-c670-49e2-b992-bd8ceff94d24",
+            message_id: "c3945190-a81c-4c80-912f-9bfc788d0651",
+            user_id: 11
+          }
+        ),
+        frame(
+          "message_deleted",
+          "Server → client",
+          "Retain a sender/message tombstone before message_delivered_ack; ignore late content.",
+          %{
+            type: "message_deleted",
+            from_user_id: 10,
+            message_id: "c3945190-a81c-4c80-912f-9bfc788d0651",
+            receipt_id: "26df9a61-b860-4aa7-a982-fac892087538"
+          }
+        )
+      ]),
       group("Errors", [
         frame(
           "error",

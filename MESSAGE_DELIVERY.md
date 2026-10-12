@@ -79,6 +79,28 @@ Temporary presence-renewal failures preserve the socket within its confirmed lea
 New sends return `failed/unavailable` until renewal recovers; ping and ACK remain
 allowed. Lease expiry or ownership loss closes the socket.
 
+## Deletion
+
+Send `delete_message` with `message_id`, receiver `user_id`, and a fresh UUID
+`request_id`. Sender identity comes only from authentication. The server returns
+`message_result` with the same receipt-or-commit statuses, but deletion always
+commits before success. It atomically replaces matching pending content with a
+`message_deleted` notice, or inserts a notice when content is already delivered.
+A different receiver for an existing pending identity is rejected.
+
+Receivers get `from_user_id`, `message_id`, and `receipt_id`, and confirm using
+`message_delivered_ack`. Notices survive offline receivers and retry until ACK.
+Old content ACKs cannot remove a pending deletion notice. Deletion is idempotent;
+the backend stores pending work, not message history, so it cannot verify ownership
+of an already delivered UUID beyond the authenticated sender namespace.
+
+Stop retrying original content when deleting. Receivers must retain a deletion
+tombstone for `(from_user_id, message_id)` before ACK, including unknown messages,
+and ignore/ACK late content: delivery remains unordered and at least once.
+After deletion ACK, the backend retains no tombstone; stale content retries can
+reach the receiver again. The mock client only logs and ACKs deletion notices;
+implementing local deletion/tombstones is outside its scope.
+
 ## Mock clients
 
 Stores survive socket reconnect, but **process stop/crash destroys inbox, outbox and
@@ -88,6 +110,11 @@ jitter. Transient `presence_unavailable` reconnects; uncorrelated protocol error
 suspend sends until `ChatchatClient.resume/1`.
 
 Inspect with `ChatchatClient.outbox/1` and `ChatchatClient.inbox/1`.
+Use `ChatchatClient.delete_message(client, receiver_id_or_pid, message_id)` for a
+single deletion attempt. It logs the backend result and returns `{:ok, message_id}`
+or `{:error, reason}`. Retry failures manually with the same message ID. Active
+outbox entries return `{:error, :message_pending}` to prevent content retries
+racing with deletion.
 
 ## Default bounds
 
