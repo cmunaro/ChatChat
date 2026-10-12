@@ -4,8 +4,17 @@ defmodule ChatchatTcp.ClusterDeliveryTest do
   alias ChatchatBroker.Repo
   alias ChatchatBroker.Storage.{MessagesStore, Schemas.Message, Schemas.User}
 
+  setup_all do
+    unless Node.alive?() do
+      epmd = Path.join([:code.root_dir(), "bin", "epmd"])
+      {_, 0} = System.cmd(epmd, ["-daemon"])
+      {:ok, _} = Node.start(:"chatchat_tests@127.0.0.1", :longnames)
+    end
+
+    :ok
+  end
+
   setup do
-    unless Node.alive?(), do: {:ok, _} = Node.start(:"chatchat_tests@127.0.0.1", :longnames)
     :ok = Ecto.Adapters.SQL.Sandbox.checkout(Repo, sandbox: false)
 
     users =
@@ -32,6 +41,7 @@ defmodule ChatchatTcp.ClusterDeliveryTest do
 
     {:ok, _} = :peer.call(peer, Application, :ensure_all_started, [:chatchat_tcp])
     :ok = :peer.call(peer, Ecto.Adapters.SQL.Sandbox, :mode, [Repo, :auto])
+    {:ok, _} = :peer.call(peer, Ecto.Adapters.SQL, :query, [Repo, "SELECT 1", []])
     assert Node.connect(remote)
     port = :peer.call(peer, ChatchatTcp, :port, [])
 
