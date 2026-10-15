@@ -6,6 +6,77 @@ defmodule ChatchatClient.SocketTest do
     %{store: Store.new(2), user_id: 2, username: "test", inflight: %{}, result_observer: self()}
   end
 
+  test "edit replacement cancels inflight attempts and ignores late results and timeouts" do
+    {:ok, id, store} = Store.put_outbox(Store.new(2), 1, "original")
+    request = Ecto.UUID.generate()
+    {:ok, store} = Store.begin_attempt(store, id, request)
+    timer = Process.send_after(self(), :unused_timeout, 10_000)
+    initial = %{state() | store: store, inflight: %{id => {request, timer}}}
+
+    assert {:reply, {:ok, ^id}, updated} =
+             ChatchatClient.handle_call({:edit_message, 1, id, "edited"}, nil, initial)
+
+    assert Process.read_timer(timer) == false
+    assert updated.inflight == %{}
+    assert_receive :retry_outbox
+
+    assert {:noreply, ^updated} =
+             ChatchatClient.handle_info({:send_timeout, id, request}, updated)
+
+    response = %{
+      "type" => "message_result",
+      "message_id" => id,
+      "request_id" => request,
+      "status" => "ok"
+    }
+
+    assert {:ok, ^updated} = ChatchatClient.handle_response(nil, response, updated)
+    assert Store.outbox(updated.store) == [[id, 1, "edited", nil]]
+  end
+
+  test "mock receiver logs and ACKs edits without modifying the inbox" do
+    {client, server} = connected_sockets()
+
+    frame = %{
+      "type" => "edit_message",
+      "from_user_id" => 1,
+      "message_id" => Ecto.UUID.generate(),
+      "message" => "edited",
+      "inserted_at" => "2026-10-15T10:00:00.000000Z",
+      "receipt_id" => Ecto.UUID.generate()
+    }
+
+    initial = state()
+
+    output =
+      ExUnit.CaptureIO.capture_io(fn ->
+        assert {:ok, ^initial} = ChatchatClient.handle_response(client, frame, initial)
+        assert {:ok, ^initial} = ChatchatClient.handle_response(client, frame, initial)
+      end)
+
+    assert output =~ "received message edit"
+
+    for _ <- 1..2 do
+      assert {:ok, line} = :gen_tcp.recv(server, 0, 1_000)
+
+      assert Jason.decode!(line) ==
+               frame
+               |> Map.take(["from_user_id", "message_id", "receipt_id"])
+               |> Map.put("type", "message_delivered_ack")
+    end
+
+    for invalid <- [
+          Map.put(frame, "inserted_at", "invalid"),
+          Map.put(frame, "message", 1),
+          Map.put(frame, "receipt_id", "invalid")
+        ] do
+      assert {:error, :invalid_edit, ^initial} =
+               ChatchatClient.handle_response(client, invalid, initial)
+    end
+
+    assert {:error, :timeout} = :gen_tcp.recv(server, 0, 30)
+  end
+
   test "delete helper refuses messages still awaiting delivery" do
     initial = state()
     {:ok, id, store} = Store.put_outbox(initial.store, 1, "pending")

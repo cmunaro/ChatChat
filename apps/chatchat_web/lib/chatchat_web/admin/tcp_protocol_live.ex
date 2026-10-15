@@ -121,6 +121,33 @@ defmodule ChatchatWeb.Admin.TcpProtocolLive do
           }
         )
       ]),
+      group("Message editing", [
+        frame(
+          "edit_message",
+          "Client → server",
+          "Edits a sender/message identity; direct delivery, pending replacement on fallback. Retries use fresh request IDs.",
+          %{
+            type: "edit_message",
+            request_id: "7a724ef9-c670-49e2-b992-bd8ceff94d24",
+            message_id: "c3945190-a81c-4c80-912f-9bfc788d0651",
+            user_id: 11,
+            message: "Updated text"
+          }
+        ),
+        frame(
+          "edit_message",
+          "Server → client",
+          "Reconcile using inserted_at, including unknown messages. Confirm with message_delivered_ack.",
+          %{
+            type: "edit_message",
+            from_user_id: 10,
+            message_id: "c3945190-a81c-4c80-912f-9bfc788d0651",
+            message: "Updated text",
+            inserted_at: "2026-10-15T10:00:00.000000Z",
+            receipt_id: "26df9a61-b860-4aa7-a982-fac892087538"
+          }
+        )
+      ]),
       group("Message deletion", [
         frame(
           "delete_message",

@@ -134,6 +134,73 @@ defmodule ChatchatBroker.Storage.MessagesStoreTest do
     end
   end
 
+  test "edits replace pending rows and stale same-kind ACKs cannot delete replacements",
+       %{message: message, other: other} do
+    assert {:ok, original} = MessagesStore.insert_pending(message)
+    edit = Map.merge(message, %{kind: "edit", payload: "edited"})
+
+    assert {:error, :identity_conflict} =
+             MessagesStore.insert_pending(%{edit | receiver_id: other})
+
+    assert {:ok, first} = MessagesStore.insert_pending(edit)
+    assert DateTime.compare(first.inserted_at, original.inserted_at) == :gt
+    assert {:ok, ^first} = MessagesStore.insert_pending(edit)
+    assert {:error, :identity_conflict} = MessagesStore.insert_pending(message)
+
+    # Force the clock-backward path; replacement must still advance the version.
+    future = DateTime.add(DateTime.utc_now(), 60, :second)
+
+    Repo.update_all(from(m in Message, where: m.sender_id == ^message.sender_id),
+      set: [inserted_at: future]
+    )
+
+    assert {:ok, second} = MessagesStore.insert_pending(%{edit | payload: "edited again"})
+    assert DateTime.compare(second.inserted_at, future) == :gt
+
+    for old <- [original, first] do
+      assert :ok =
+               MessagesStore.delete_for_receiver(
+                 old.receiver_id,
+                 old.sender_id,
+                 old.message_id,
+                 old.kind,
+                 old.inserted_at
+               )
+    end
+
+    assert [^second] = MessagesStore.pending_page(message.receiver_id)
+    assert {:ok, deletion} = MessagesStore.insert_pending(%{edit | kind: "delete", payload: ""})
+    assert {:ok, replacement} = MessagesStore.insert_pending(edit)
+    assert DateTime.compare(replacement.inserted_at, deletion.inserted_at) == :gt
+
+    assert :ok =
+             MessagesStore.delete_for_receiver(
+               deletion.receiver_id,
+               deletion.sender_id,
+               deletion.message_id,
+               deletion.kind,
+               deletion.inserted_at
+             )
+
+    assert [^replacement] = MessagesStore.pending_page(message.receiver_id)
+
+    assert :ok =
+             MessagesStore.delete_for_receiver(
+               replacement.receiver_id,
+               replacement.sender_id,
+               replacement.message_id,
+               replacement.kind,
+               replacement.inserted_at
+             )
+
+    assert [] = MessagesStore.pending_page(message.receiver_id)
+  end
+
+  test "edit can be inserted without an original", %{message: message} do
+    assert {:ok, %{kind: "edit", payload: "edited"}} =
+             MessagesStore.insert_pending(Map.merge(message, %{kind: "edit", payload: "edited"}))
+  end
+
   test "expired persistence budget never starts a write", %{message: message} do
     assert {:error, :deadline} =
              MessagesStore.insert_pending_before(message, System.monotonic_time(:millisecond) - 1)

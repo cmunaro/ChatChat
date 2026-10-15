@@ -49,13 +49,24 @@ defmodule ChatchatBroker.Storage.MessagesStore do
           stored.receiver_id != attributes.receiver_id ->
             Repo.rollback(:identity_conflict)
 
-          attributes.kind == "delete" ->
-            stored
-            |> Ecto.Changeset.change(kind: "delete", payload: "")
-            |> Repo.update!(write_options(deadline))
-
           stored.kind == attributes.kind and stored.payload == attributes.payload ->
             stored
+
+          attributes.kind in ["delete", "edit"] ->
+            timestamp = DateTime.utc_now()
+
+            timestamp =
+              if DateTime.compare(timestamp, stored.inserted_at) == :gt,
+                do: timestamp,
+                else: DateTime.add(stored.inserted_at, 1, :microsecond)
+
+            stored
+            |> Ecto.Changeset.change(
+              kind: attributes.kind,
+              payload: if(attributes.kind == "delete", do: "", else: attributes.payload),
+              inserted_at: timestamp
+            )
+            |> Repo.update!(write_options(deadline))
 
           true ->
             Repo.rollback(:identity_conflict)
@@ -106,13 +117,16 @@ defmodule ChatchatBroker.Storage.MessagesStore do
     Repo.all(query, timeout: @timeout)
   end
 
-  def delete_for_receiver(receiver_id, sender_id, message_id, kind \\ "message") do
-    from(m in Message,
-      where:
-        m.receiver_id == ^receiver_id and m.sender_id == ^sender_id and
-          m.message_id == ^message_id and m.kind == ^kind
-    )
-    |> Repo.delete_all(timeout: @timeout)
+  def delete_for_receiver(receiver_id, sender_id, message_id, kind \\ "message", timestamp \\ nil) do
+    query =
+      from(m in Message,
+        where:
+          m.receiver_id == ^receiver_id and m.sender_id == ^sender_id and
+            m.message_id == ^message_id and m.kind == ^kind
+      )
+
+    query = if timestamp, do: where(query, [m], m.inserted_at == ^timestamp), else: query
+    Repo.delete_all(query, timeout: @timeout)
 
     :ok
   end

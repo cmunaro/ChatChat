@@ -26,7 +26,7 @@ defmodule ChatchatTcp.MessageDelivery do
            GenServer.call(
              __MODULE__,
              {:admit, ticket, sender, session, request["request_id"], request["message_id"],
-              request["user_id"], request["type"] == "delete_message"},
+              request["user_id"], request["type"]},
              :infinity
            ) do
       send(
@@ -58,7 +58,7 @@ defmodule ChatchatTcp.MessageDelivery do
            GenServer.call(
              __MODULE__,
              {:stored_permit, ticket, message.receiver_id, session, message.sender_id,
-              message.message_id, message.kind},
+              message.message_id, message.kind, message.inserted_at},
              :infinity
            ),
          :ok <- send_stored_frame(message, receipt) do
@@ -107,7 +107,7 @@ defmodule ChatchatTcp.MessageDelivery do
 
   @impl true
   def handle_call(
-        {:admit, ticket, sender, session, request, id, receiver, deletion},
+        {:admit, ticket, sender, session, request, id, receiver, type},
         {pid, _},
         state
       ) do
@@ -129,7 +129,10 @@ defmodule ChatchatTcp.MessageDelivery do
         id: id,
         receiver: receiver,
         message: nil,
-        kind: if(deletion, do: "delete", else: "message"),
+        kind:
+          %{"send_message" => "message", "edit_message" => "edit", "delete_message" => "delete"}[
+            type
+          ],
         inserted_at: DateTime.utc_now(),
         deadline: now + @result_ms,
         direct_deadline: now + @direct_ms,
@@ -155,9 +158,24 @@ defmodule ChatchatTcp.MessageDelivery do
     end
   end
 
-  def handle_call({:stored_permit, ticket, receiver, session, sender, id, kind}, {pid, _}, state) do
+  def handle_call(
+        {:stored_permit, ticket, receiver, session, sender, id, kind, timestamp},
+        {pid, _},
+        state
+      ) do
     if elem(ticket, 1) == pid do
-      case reserve_receipt(ticket, receiver, session, sender, id, nil, @stored_ms, state, kind) do
+      case reserve_receipt(
+             ticket,
+             receiver,
+             session,
+             sender,
+             id,
+             nil,
+             @stored_ms,
+             state,
+             kind,
+             timestamp
+           ) do
         {:ok, handler, receipt, state} -> {:reply, {:ok, handler, receipt}, state}
         {:error, state} -> {:reply, {:error, :capacity}, state}
       end
@@ -189,7 +207,9 @@ defmodule ChatchatTcp.MessageDelivery do
           else
             :telemetry.execute([:chatchat, :inbox, :receipt], %{count: 1}, %{})
             state = drop_receipt(state, receipt)
-            {:reply, :ok, start_delete(receiver, sender, id, tracking.kind, state)}
+
+            {:reply, :ok,
+             start_delete(receiver, sender, id, tracking.kind, tracking.inserted_at, state)}
           end
         else
           {:reply, :ok, state}
@@ -301,7 +321,8 @@ defmodule ChatchatTcp.MessageDelivery do
               attempt.id,
               attempt.message,
               attempt.inserted_at,
-              receipt
+              receipt,
+              attempt.kind
             )
 
           case Protocol.encode(frame) do
@@ -501,7 +522,8 @@ defmodule ChatchatTcp.MessageDelivery do
          origin,
          lifetime,
          state,
-         kind \\ "message"
+         kind \\ "message",
+         timestamp \\ nil
        ) do
     count = Enum.count(state.receipts, fn {_, receipt} -> receipt.receiver == receiver end)
 
@@ -517,6 +539,7 @@ defmodule ChatchatTcp.MessageDelivery do
         session: session,
         sender: sender,
         kind: kind,
+        inserted_at: timestamp,
         id: id,
         origin: origin,
         expires: now() + lifetime,
@@ -816,11 +839,11 @@ defmodule ChatchatTcp.MessageDelivery do
     %{state | attempts: attempts}
   end
 
-  defp start_delete(receiver, sender, id, kind, state) do
+  defp start_delete(receiver, sender, id, kind, timestamp, state) do
     if map_size(state.jobs) < @workers do
       task =
         Task.Supervisor.async_nolink(ChatchatTcp.Delivery.TaskSupervisor, fn ->
-          MessagesStore.delete_for_receiver(receiver, sender, id, kind)
+          MessagesStore.delete_for_receiver(receiver, sender, id, kind, timestamp)
         end)
 
       %{state | jobs: Map.put(state.jobs, task.ref, :delete)}

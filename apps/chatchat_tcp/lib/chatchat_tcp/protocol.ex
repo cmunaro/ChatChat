@@ -19,7 +19,8 @@ defmodule ChatchatTcp.Protocol do
                request["message_id"],
                payload,
                ~U[2026-10-09 00:00:00.000000Z],
-               request["message_id"]
+               request["message_id"],
+               if(request["type"] == "edit_message", do: "edit", else: "message")
              )
            ) do
       :ok
@@ -52,12 +53,13 @@ defmodule ChatchatTcp.Protocol do
         message.message_id,
         message.payload,
         message.inserted_at,
-        receipt
+        receipt,
+        message.kind
       )
 
-  def delivery(sender, id, payload, timestamp, receipt) do
+  def delivery(sender, id, payload, timestamp, receipt, kind \\ "message") do
     %{
-      type: "message",
+      type: if(kind == "edit", do: "edit_message", else: "message"),
       from_user_id: sender,
       message_id: id,
       message: payload,

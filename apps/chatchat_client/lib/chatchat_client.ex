@@ -123,6 +123,22 @@ defmodule ChatchatClient do
 
   def send_message(_, _, _), do: {:error, :invalid_params}
 
+  @doc "Queues an edit, replacing local pending content for the same message and destination."
+  @spec edit_message(pid(), pid() | integer(), String.t(), String.t()) ::
+          {:ok, String.t()} | {:error, term()}
+  def edit_message(from, to, id, message) when is_pid(from) and is_pid(to) do
+    edit_message(from, GenServer.call(to, :user_id, call_timeout()), id, message)
+  end
+
+  def edit_message(from, to, id, message) when is_pid(from) and is_integer(to) do
+    case Store.validate_message(1, to, id, message, "edit") do
+      :ok -> GenServer.call(from, {:edit_message, to, id, message}, call_timeout())
+      _ -> {:error, :invalid_params}
+    end
+  end
+
+  def edit_message(_, _, _, _), do: {:error, :invalid_params}
+
   @doc "Requests deletion once; returns the backend result. Retry failures with the same message ID."
   @spec delete_message(pid(), pid() | integer(), String.t()) ::
           {:ok, String.t()} | {:error, term()}
@@ -193,6 +209,19 @@ defmodule ChatchatClient do
         if observer = Map.get(state, :result_observer), do: send(observer, {:delivery_queued, id})
         send(self(), :retry_outbox)
         {:reply, {:ok, id}, %{state | store: store}}
+
+      error ->
+        {:reply, error, state}
+    end
+  end
+
+  def handle_call({:edit_message, user_id, id, message}, _from, state) do
+    case Store.put_edit(state.store, user_id, id, message) do
+      {:ok, ^id, store} ->
+        if previous = state.inflight[id], do: cancel_timer(elem(previous, 1))
+        if observer = Map.get(state, :result_observer), do: send(observer, {:delivery_queued, id})
+        send(self(), :retry_outbox)
+        {:reply, {:ok, id}, %{state | store: store, inflight: Map.delete(state.inflight, id)}}
 
       error ->
         {:reply, error, state}
@@ -516,6 +545,37 @@ defmodule ChatchatClient do
     end
   end
 
+  def handle_response(socket, %{"type" => "edit_message"} = frame, state) do
+    receipt = frame["receipt_id"]
+
+    with :ok <-
+           Store.validate_message(
+             frame["from_user_id"],
+             state.user_id,
+             frame["message_id"],
+             frame["message"],
+             "edit"
+           ),
+         {:ok, ^receipt} <- Ecto.UUID.cast(receipt),
+         timestamp when is_binary(timestamp) and byte_size(timestamp) <= 64 <-
+           frame["inserted_at"],
+         {:ok, _, 0} <- DateTime.from_iso8601(timestamp) do
+      IO.puts("#{state.username} received message edit: #{inspect(frame)}")
+
+      case Socket.send_frame(socket, %{
+             type: "message_delivered_ack",
+             from_user_id: frame["from_user_id"],
+             message_id: frame["message_id"],
+             receipt_id: receipt
+           }) do
+        :ok -> {:ok, state}
+        {:error, reason} -> {:error, reason, state}
+      end
+    else
+      _ -> {:error, :invalid_edit, state}
+    end
+  end
+
   def handle_response(socket, %{"type" => "message_deleted"} = frame, state) do
     if is_integer(frame["from_user_id"]) and frame["from_user_id"] > 0 and
          frame["from_user_id"] <= 9_223_372_036_854_775_807 and
@@ -621,7 +681,7 @@ defmodule ChatchatClient do
     state = %{state | inflight: Map.put(state.inflight, entry.message_id, {request, timer})}
 
     case Socket.send_frame(state.socket, %{
-           type: "send_message",
+           type: if(entry.kind == "edit", do: "edit_message", else: "send_message"),
            request_id: request,
            message_id: entry.message_id,
            user_id: entry.receiver_id,

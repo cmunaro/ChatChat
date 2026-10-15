@@ -134,7 +134,7 @@ defmodule ChatchatTcp.Handler do
     with true <- lease_live?(state),
          {:ok, %{"type" => type} = request} <- Jason.decode(frame) do
       result =
-        if type in ["send_message", "delete_message"] and
+        if type in ["send_message", "edit_message", "delete_message"] and
              (state.presence_failures > 0 or MapSet.size(state.pending_sends) >= 16) and
              ChatchatTcp.Protocol.uuid?(request["request_id"]) and
              ChatchatTcp.Protocol.uuid?(request["message_id"]) do

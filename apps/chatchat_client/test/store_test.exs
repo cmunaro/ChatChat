@@ -2,6 +2,36 @@ defmodule ChatchatClient.StoreTest do
   use ExUnit.Case, async: true
   alias ChatchatClient.Store
 
+  test "edits replace pending content and invalidate old results without changing destination" do
+    {:ok, id, store} = Store.put_outbox(Store.new(1), 2, "original")
+    request = Ecto.UUID.generate()
+    {:ok, store} = Store.begin_attempt(store, id, request)
+    assert {:error, :identity_conflict} = Store.put_edit(store, 3, id, "wrong receiver")
+    assert {:error, :invalid_request} = Store.put_edit(store, 2, id, <<255>>)
+    assert {:ok, ^id, store} = Store.put_edit(store, 2, id, "edited")
+    assert [%{kind: "edit", payload: "edited", request_id: nil}] = Store.pending(store)
+    assert {:error, :unmatched_result} = Store.result(store, id, request, :ok)
+    next = Ecto.UUID.generate()
+    assert {:ok, store} = Store.begin_attempt(store, id, next)
+    assert {:ok, store} = Store.result(store, id, next, :failed)
+    assert Store.outbox(store) == [[id, 2, "edited", nil]]
+    assert {:ok, ^id, store} = Store.put_edit(store, 2, id, "edited again")
+    assert [%{kind: "edit", payload: "edited again"}] = Store.pending(store)
+  end
+
+  test "replacing an entry works at capacity; a new edit remains bounded" do
+    store =
+      Enum.reduce(1..128, Store.new(1), fn _, store ->
+        {:ok, _, store} = Store.put_outbox(store, 2, "original")
+        store
+      end)
+
+    [entry | _] = Store.pending(store)
+    assert {:ok, _, store} = Store.put_edit(store, 2, entry.message_id, "edited")
+    assert length(Store.outbox(store)) == 128
+    assert {:error, :capacity} = Store.put_edit(store, 2, Ecto.UUID.generate(), "new")
+  end
+
   test "pure outbox transitions keep identity and only a matching ok removes it" do
     store = Store.new(1)
     assert {:ok, id, store} = Store.put_outbox(store, 2, "hello")

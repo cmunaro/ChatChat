@@ -14,8 +14,8 @@ defmodule ChatchatClient.Store do
     }
   end
 
-  def put_outbox(store, receiver, payload, id \\ Ecto.UUID.generate()) do
-    with :ok <- validate_message(store.user_id, receiver, id, payload) do
+  def put_outbox(store, receiver, payload, id \\ Ecto.UUID.generate(), kind \\ "message") do
+    with :ok <- validate_message(store.user_id, receiver, id, payload, kind) do
       case :gb_trees.lookup(id, store.outbox) do
         :none ->
           entry = %{
@@ -23,6 +23,7 @@ defmodule ChatchatClient.Store do
             queued_at: System.monotonic_time(:millisecond),
             receiver_id: receiver,
             payload: payload,
+            kind: kind,
             request_id: nil,
             rejection: nil,
             retry_at: 0,
@@ -33,12 +34,28 @@ defmodule ChatchatClient.Store do
             do: {:ok, id, put_entry(store, entry)},
             else: {:error, :capacity}
 
-        {:value, %{receiver_id: ^receiver, payload: ^payload}} ->
+        {:value, %{receiver_id: ^receiver, payload: ^payload, kind: ^kind}} ->
           {:ok, id, store}
 
         _ ->
           {:error, :identity_conflict}
       end
+    end
+  end
+
+  def put_edit(store, receiver, id, payload) do
+    case :gb_trees.lookup(id, store.outbox) do
+      {:value, %{receiver_id: previous}} when previous != receiver ->
+        {:error, :identity_conflict}
+
+      previous ->
+        store =
+          case previous do
+            {:value, entry} -> delete_entry(store, entry)
+            :none -> store
+          end
+
+        put_outbox(store, receiver, payload, id, "edit")
     end
   end
 
@@ -129,12 +146,12 @@ defmodule ChatchatClient.Store do
   def inbox(store, cursor \\ nil, limit \\ @page_size) when limit > 0 and limit <= @page_size,
     do: after_page(store.inbox, cursor || {0, ""}, limit)
 
-  def validate_message(sender_id, receiver_id, message_id, payload) do
+  def validate_message(sender_id, receiver_id, message_id, payload, kind \\ "message") do
     with true <- valid_user?(sender_id) and valid_user?(receiver_id),
          {:ok, ^message_id} <- Ecto.UUID.cast(message_id),
          true <- is_binary(payload) and String.valid?(payload) and byte_size(payload) <= 4_096 do
       request = %{
-        type: "send_message",
+        type: if(kind == "edit", do: "edit_message", else: "send_message"),
         request_id: message_id,
         message_id: message_id,
         user_id: receiver_id,
@@ -142,7 +159,7 @@ defmodule ChatchatClient.Store do
       }
 
       delivery = %{
-        type: "message",
+        type: if(kind == "edit", do: "edit_message", else: "message"),
         message_id: message_id,
         from_user_id: 9_223_372_036_854_775_807,
         message: payload,

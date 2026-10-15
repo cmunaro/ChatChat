@@ -29,58 +29,65 @@ defmodule ChatchatTcp.MessageDeliveryTest do
     %{sender: sender, receiver: receiver, other: other}
   end
 
-  test "confirmed local receipt makes no per-message PostgreSQL queries or Redis payload writes",
-       %{
-         sender: sender,
-         receiver: receiver
-       } do
-    observe_stages()
-    from = connect(sender.id)
-    to = connect(receiver.id)
-    request = request(receiver.id)
-    observer = self()
-    telemetry_id = make_ref()
-    {:ok, database_id} = Ecto.UUID.dump(request.message_id)
+  for send_type <- ["send_message", "edit_message"] do
+    @send_type send_type
+    test "#{send_type} confirmed receipt makes no per-message PostgreSQL queries or Redis payload writes",
+         %{
+           sender: sender,
+           receiver: receiver
+         } do
+      observe_stages()
+      from = connect(sender.id)
+      to = connect(receiver.id)
+      request = %{request(receiver.id) | type: @send_type}
+      observer = self()
+      telemetry_id = make_ref()
+      {:ok, database_id} = Ecto.UUID.dump(request.message_id)
 
-    :ok =
-      :telemetry.attach(
-        telemetry_id,
-        [:chatchat_broker, :repo, :query],
-        fn _, _, metadata, {observer, database_id} ->
-          # Independent connection/reconciliation inbox reads are still expected.
-          if String.contains?(metadata.query, "\"messages\"") and
-               database_id in metadata.params,
-             do: send(observer, :message_query)
-        end,
-        {observer, database_id}
-      )
+      :ok =
+        :telemetry.attach(
+          telemetry_id,
+          [:chatchat_broker, :repo, :query],
+          fn _, _, metadata, {observer, database_id} ->
+            # Independent connection/reconciliation inbox reads are still expected.
+            if String.contains?(metadata.query, "\"messages\"") and
+                 database_id in metadata.params,
+               do: send(observer, :message_query)
+          end,
+          {observer, database_id}
+        )
 
-    on_exit(fn -> :telemetry.detach(telemetry_id) end)
-    send_json(from, request)
-    assert {:ok, frame} = recv(to)
-    assert frame["message_id"] == request.message_id
-    assert frame["from_user_id"] == sender.id
-    assert {:error, :timeout} = :gen_tcp.recv(from, 0, 50)
-    acknowledge(to, frame)
-    assert {:ok, %{"status" => "ok", "request_id" => request_id}} = recv(from)
-    assert request_id == request.request_id
-    refute_receive :message_query
-    :telemetry.detach(telemetry_id)
-    assert Repo.get_by(Message, sender_id: sender.id, message_id: request.message_id) == nil
+      on_exit(fn -> :telemetry.detach(telemetry_id) end)
+      send_json(from, request)
+      assert {:ok, frame} = recv(to)
 
-    assert {:ok, nil} =
-             Redix.command(ChatchatTcp.Redis.Heartbeat, [
-               "GET",
-               "chatchat:message:#{request.message_id}"
-             ])
+      assert frame["type"] ==
+               if(@send_type == "edit_message", do: "edit_message", else: "message")
 
-    eventually(fn -> MessageDelivery.metric_snapshot().attempts == 0 end)
-    assert_stage(:queue, :dispatched)
-    assert_stage(:schedule, :started)
-    assert_stage(:route, :ok)
-    assert_stage(:direct_wait, :ok)
-    refute_receive {:stage, _, %{stage: :direct_wait}}, 30
-    refute_receive {:stage, _, %{stage: :persist}}, 30
+      assert frame["message_id"] == request.message_id
+      assert frame["from_user_id"] == sender.id
+      assert {:error, :timeout} = :gen_tcp.recv(from, 0, 50)
+      acknowledge(to, frame)
+      assert {:ok, %{"status" => "ok", "request_id" => request_id}} = recv(from)
+      assert request_id == request.request_id
+      refute_receive :message_query
+      :telemetry.detach(telemetry_id)
+      assert Repo.get_by(Message, sender_id: sender.id, message_id: request.message_id) == nil
+
+      assert {:ok, nil} =
+               Redix.command(ChatchatTcp.Redis.Heartbeat, [
+                 "GET",
+                 "chatchat:message:#{request.message_id}"
+               ])
+
+      eventually(fn -> MessageDelivery.metric_snapshot().attempts == 0 end)
+      assert_stage(:queue, :dispatched)
+      assert_stage(:schedule, :started)
+      assert_stage(:route, :ok)
+      assert_stage(:direct_wait, :ok)
+      refute_receive {:stage, _, %{stage: :direct_wait}}, 30
+      refute_receive {:stage, _, %{stage: :persist}}, 30
+    end
   end
 
   test "offline commit and reconnect recover ownership with scoped deletion", %{
@@ -792,6 +799,82 @@ defmodule ChatchatTcp.MessageDeliveryTest do
     assert {:ok, %{"status" => "rejected", "reason" => "invalid_request"}} = recv(from)
     send_json(from, %{deletion | user_id: 9_223_372_036_854_775_807})
     assert {:ok, %{"status" => "rejected", "reason" => "invalid_receiver"}} = recv(from)
+  end
+
+  test "offline edits replace original content and same-session old edit ACK cannot erase replacement",
+       %{sender: sender, receiver: receiver} do
+    from = connect(sender.id)
+    original = request(receiver.id)
+    send_json(from, original)
+    assert {:ok, %{"status" => "ok"}} = recv(from)
+
+    edit = %{
+      original
+      | type: "edit_message",
+        request_id: Ecto.UUID.generate(),
+        message: "first edit"
+    }
+
+    send_json(from, edit)
+    assert {:ok, %{"status" => "ok"}} = recv(from)
+    send_json(from, %{edit | request_id: Ecto.UUID.generate()})
+    assert {:ok, %{"status" => "ok"}} = recv(from)
+
+    assert [%Message{kind: "edit", payload: "first edit"}] =
+             MessagesStore.pending_page(receiver.id)
+
+    to = connect(receiver.id)
+    assert {:ok, %{"type" => "edit_message", "message" => "first edit"} = old} = recv(to)
+
+    # Leave direct deliveries unacknowledged to exercise normal persistence fallback.
+    send_json(from, %{edit | request_id: Ecto.UUID.generate(), message: "second edit"})
+    assert {:ok, %{"status" => "ok"}} = recv(from, 4_000)
+
+    assert [%Message{kind: "edit", payload: "second edit"} = stored] =
+             MessagesStore.pending_page(receiver.id)
+
+    acknowledge(to, old)
+    Process.sleep(30)
+    assert [^stored] = MessagesStore.pending_page(receiver.id)
+    timestamp = DateTime.to_iso8601(stored.inserted_at)
+
+    current =
+      Enum.reduce_while(1..8, nil, fn _, _ ->
+        assert {:ok, frame} = recv(to)
+        if frame["inserted_at"] == timestamp, do: {:halt, frame}, else: {:cont, nil}
+      end)
+
+    assert current
+    acknowledge(to, current)
+    eventually(fn -> MessagesStore.pending_page(receiver.id) == [] end)
+  end
+
+  test "edits reject spoofed identity, malformed IDs, and oversized frames",
+       %{sender: sender, receiver: receiver} do
+    from = connect(sender.id)
+    edit = %{request(receiver.id) | type: "edit_message"}
+
+    for invalid <- [
+          Map.put(edit, :sender_id, receiver.id),
+          Map.put(edit, :from_user_id, receiver.id),
+          %{edit | user_id: 0},
+          %{edit | message: 123}
+        ] do
+      send_json(from, invalid)
+      assert {:ok, %{"status" => "rejected", "reason" => "invalid_request"}} = recv(from)
+    end
+
+    assert {:error, :invalid_request} =
+             ChatchatTcp.Protocol.validate_send(
+               sender.id,
+               Jason.decode!(Jason.encode!(%{edit | message: String.duplicate("x", 4_096)}))
+             )
+
+    assert {:error, :invalid_request} =
+             ChatchatTcp.Protocol.validate_send(
+               sender.id,
+               Jason.decode!(Jason.encode!(%{edit | message_id: "invalid"}))
+             )
   end
 
   defp request(receiver),

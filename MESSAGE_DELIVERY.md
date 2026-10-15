@@ -79,6 +79,37 @@ Temporary presence-renewal failures preserve the socket within its confirmed lea
 New sends return `failed/unavailable` until renewal recovers; ping and ACK remain
 allowed. Lease expiry or ownership loss closes the socket.
 
+## Editing
+
+Use `ChatchatClient.edit_message(client, receiver_id_or_pid, message_id, text)`.
+It returns `{:ok, message_id}` after queueing, replaces local pending content for
+that identity and destination, and automatically retries like `send_message/3`.
+Changing the destination of a local pending identity is rejected. Superseded
+attempt results cannot confirm the replacement.
+
+Send `edit_message` with `message_id`, receiver `user_id`, `message`, and a fresh
+UUID `request_id`. Receiver frames also use `edit_message`, with the ordinary
+message fields: `from_user_id`, `message_id`, `message`, `inserted_at`, and
+`receipt_id`. Results and receipt ACKs are unchanged. Sender identity comes from
+authentication; the backend does not check that an original message exists.
+
+Edits use direct receipt-or-commit delivery. PostgreSQL fallback atomically
+replaces matching pending content (including earlier edits/deletion notices), or
+inserts an edit if no row exists. A different pending receiver is rejected.
+Identical pending edit retries preserve their timestamp; changed content advances
+it. Ordinary content retries cannot overwrite a pending edit. Stored ACK cleanup
+matches the delivered kind and timestamp so an old ACK cannot delete replacement
+content. No message history or extra edit identity is retained.
+
+Application clients reconcile edits, originals and deletions using server-generated
+`inserted_at`. Delivery remains unordered and at least once. Direct delivery does
+not replace older database rows; these and already transmitted frames can arrive
+later. Delayed retries can supersede newer content; this ordering is accepted.
+The mock receiver only validates, logs and ACKs edits, without changing its inbox.
+
+Apply the edit-kind migration and upgrade TCP nodes and receivers before enabling
+edit sends. Older receivers do not understand `edit_message` frames.
+
 ## Deletion
 
 Send `delete_message` with `message_id`, receiver `user_id`, and a fresh UUID
